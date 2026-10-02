@@ -31,6 +31,7 @@ HOSTS = [h.strip() for h in os.environ.get("VMPANEL_HOST", "127.0.0.1").split(",
 TRUSTED_PROXIES = [ipaddress.ip_network(n.strip(), strict=False) for n in
                    os.environ.get("VMPANEL_TRUSTED_PROXIES", "127.0.0.1/32,::1/128").split(",") if n.strip()]
 PORT = int(os.environ.get("VMPANEL_PORT", "8787"))
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COOKIE = "vmp_session"
 MAX_BODY = 64 * 1024
@@ -176,6 +177,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"ok": True})
         if p.startswith("/static/"):
             return self.static(p[len("/static/"):])
+        if p in ("/sw.js", "/manifest.webmanifest"):   # PWA: precisam ficar na raiz do site
+            return self.static(p[1:])
         if p == "/login":
             if self.session():
                 return self.redirect("/")

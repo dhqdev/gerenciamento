@@ -29,6 +29,41 @@
   }
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
+  // icones 8x8 desenhados pixel a pixel (SVG, cor = currentColor)
+  var ICONS = {
+    dash: [".XX..XX.", "XXXXXXXX", "XXXXXXXX", "XXXXXXXX", ".XXXXXX.", "..XXXX..", "...XX...", "........"],
+    docker: ["........", "XX.XX.XX", "XX.XX.XX", "........", "XXXXXXXX", "X......X", ".XXXXXX.", "........"],
+    procs: ["XXXXXXX.", "........", "XXXXX...", "........", "XXXXXXXX", "........", "XXX.....", "........"],
+    term: ["XXXXXXXX", "X......X", "X.X....X", "X..X...X", "X.X.XX.X", "X......X", "XXXXXXXX", "........"],
+    more: ["........", "XXXXXXXX", "........", "XXXXXXXX", "........", "XXXXXXXX", "........", "........"],
+    net: ["..X..X..", ".XXX.X..", "X.X..X..", "..X..X..", "..X..X.X", "..X.XXX.", "..X..X..", "........"],
+    disks: [".XXXXXX.", "X......X", "XXXXXXXX", "X......X", "X....XXX", "X......X", ".XXXXXX.", "........"],
+    system: [".X.X.X..", "XXXXXXX.", ".X...X..", "XX.X.XX.", ".X...X..", "XXXXXXX.", ".X.X.X..", "........"],
+    security: ["XXXXXXXX", "X..XX..X", "X..XX..X", "XXXXXXXX", "X..XX..X", ".X.XX.X.", "..XXXX..", "...XX..."],
+    history: ["X.......", "X.....X.", "X....XX.", "X.X..XX.", "X.XX.XX.", "X.XXXXX.", "XXXXXXXX", "........"],
+    config: ["...XX...", ".XXXXXX.", ".XX..XX.", "XX....XX", "XX....XX", ".XX..XX.", ".XXXXXX.", "...XX..."],
+    star: ["...X....", "...X....", "XXXXXXX.", ".XXXXX..", "..XXX...", ".XX.XX..", ".X...X..", "........"],
+    power: ["...X....", ".X.X.X..", "X..X..X.", "X..X..X.", "X.....X.", ".X...X..", "..XXX...", "........"],
+    install: ["...X....", "...X....", "...X....", ".XXXXX..", "..XXX...", "...X....", "X.....X.", "XXXXXXX."],
+    refresh: ["..XXXX..", ".X....X.", "X.......", "X.....XX", "X....XX.", ".X....X.", "..XXXX..", "........"]
+  };
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function icon(name) {
+    var svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "0 0 8 8"); svg.setAttribute("class", "ico"); svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("shape-rendering", "crispEdges");
+    (ICONS[name] || ICONS.more).forEach(function (row, y) {
+      for (var x = 0; x < row.length; x++) if (row[x] === "X") {
+        var r = document.createElementNS(SVGNS, "rect");
+        r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
+        svg.appendChild(r);
+      }
+    });
+    return svg;
+  }
+  var MOBILE = window.matchMedia("(max-width: 760px)");
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(8); } catch (_) {} }
+
   var UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
   function bytes(n) {
     n = Number(n) || 0;
@@ -75,12 +110,21 @@
   function table(cols, rows, opts) {
     opts = opts || {};
     var thead = h("tr", null, cols.map(function (c) {
-      var th = h("th", { class: (c.num ? "num " : "") + (c.sort ? "sort" : "") }, c.t);
+      var th = h("th", { class: (c.num ? "num " : "") + (c.sort ? "sort " : "") + (c.m === "hide" ? "hide-m" : "") }, c.t);
       if (c.sort && opts.onSort) th.addEventListener("click", function () { opts.onSort(c.sort); });
       return th;
     }));
+    rows.forEach(function (tr) {
+      Array.prototype.forEach.call(tr.children, function (cell, i) {
+        var c = cols[i];
+        if (!c) return;
+        cell.setAttribute("data-l", c.t);
+        if (c.m === "hide") cell.classList.add("hide-m");
+        if (c.m === "title") cell.classList.add("card-title");
+      });
+    });
     var body = rows.length ? rows : [h("tr", null, h("td", { colspan: cols.length, class: "muted" }, opts.empty || "Nada por aqui."))];
-    return h("div", { class: "tbl-wrap" }, h("table", null, h("thead", null, thead), h("tbody", null, body)));
+    return h("div", { class: "tbl-wrap" + (opts.cards ? " cards" : "") }, h("table", null, h("thead", null, thead), h("tbody", null, body)));
   }
   function td(v, cls, title) { return h("td", { class: cls || null, title: title || null }, v); }
 
@@ -191,6 +235,11 @@
     current = tab;
     try { history.replaceState(null, "", "#" + tab.id); } catch (_) {}
     Array.prototype.forEach.call($("tabs").children, function (b) { b.classList.toggle("on", b.dataset.id === tab.id); });
+    Array.prototype.forEach.call($("bnav").children, function (b) {
+      b.classList.toggle("on", b.dataset.id === tab.id || (b.dataset.id === "more" && BNAV.indexOf(tab.id) < 0));
+    });
+    document.body.setAttribute("data-tab", tab.id);
+    window.scrollTo(0, 0);
     var view = clear($("view"));
     body = h("div");
     var setup = VIEWS[tab.id].setup;
@@ -219,33 +268,95 @@
   }
   document.addEventListener("visibilitychange", function () { if (!document.hidden && current && current.every) refresh(); });
 
-  // ------------------------------------------------------------------ docker: acoes e janelas
-  function dockerAct(name, act, label) {
-    if ((act === "stop" || act === "restart") && !confirm((act === "stop" ? "Parar " : "Reiniciar ") + (label || name) + "?")) return;
-    toast("Enviando " + act + " para " + (label || name) + "...");
-    return post("/api/docker/action", { id: name, action: act }).then(function () {
-      toast("OK: " + (label || name) + " (" + act + ")");
-      if (current) refresh();
-    }).catch(function (e) { toast("Erro: " + e.message, true); });
-  }
-  function serviceRestart(s) {
-    if (!confirm("Reiniciar o servico " + s.name + "?\nAs tarefas sao recriadas (igual a docker service update --force).")) return;
-    toast("Reiniciando " + s.name + "...");
-    post("/api/swarm/action", { id: s.name, action: "restart" }).then(function () {
-      toast("Servico " + s.name + " reiniciando");
-      setTimeout(refresh, 1500);
-    }).catch(function (e) { toast("Erro: " + e.message, true); });
+  // ------------------------------------------------------------------ confirmacao (caixa de dialogo de RPG)
+  function ask(title, text, okLabel, danger) {
+    return new Promise(function (resolve) {
+      var root = h("div", { class: "modal confirm", role: "alertdialog", "aria-modal": "true" });
+      function done(v) { root.remove(); document.removeEventListener("keydown", key, true); resolve(v); }
+      function key(e) { if (e.key === "Escape") { e.stopPropagation(); done(false); } }
+      var yes = h("button", { class: "btn " + (danger ? "danger" : "gold"), onclick: function () { buzz(); done(true); } }, "▶ " + (okLabel || "SIM"));
+      add(root, [h("div", { class: "box sheet" }, h("h2", null, title), h("p", null, text),
+        h("div", { class: "toolbar choice" }, yes, h("button", { class: "btn", onclick: function () { done(false); } }, "CANCELAR")))]);
+      root.addEventListener("click", function (e) { if (e.target === root) done(false); });
+      document.addEventListener("keydown", key, true);
+      document.body.appendChild(root);
+      setTimeout(function () { yes.focus(); }, 30);
+    });
   }
 
-  var modalTimer = null;
-  function openModal(title, tools, content) {
-    $("modal-title").textContent = title;
-    add(clear($("modal-tools")), [tools, h("button", { class: "btn", onclick: closeModal }, "FECHAR [ESC]")]);
-    add(clear($("modal-body")), [content]);
-    $("modal").classList.remove("hidden");
+  // ------------------------------------------------------------------ docker: acoes e janelas
+  function dockerAct(name, act, label) {
+    var go = act === "stop" || act === "restart"
+      ? ask(act === "stop" ? "PARAR CONTAINER?" : "REINICIAR CONTAINER?", (label || name) + (act === "stop" ? " vai parar de rodar." : " vai reiniciar agora."),
+            act === "stop" ? "PARAR" : "REINICIAR", act === "stop")
+      : Promise.resolve(true);
+    return go.then(function (ok) {
+      if (!ok) return;
+      toast("Enviando " + act + " para " + (label || name) + "...");
+      return post("/api/docker/action", { id: name, action: act }).then(function () {
+        toast("OK: " + (label || name) + " (" + act + ")");
+        if (current) refresh();
+      }).catch(function (e) { toast("Erro: " + e.message, true); });
+    });
   }
-  function closeModal() { clearInterval(modalTimer); $("modal").classList.add("hidden"); }
+  function serviceRestart(s) {
+    ask("REINICIAR SERVICO?", s.name + ": as tarefas sao recriadas (igual a docker service update --force).", "REINICIAR").then(function (ok) {
+      if (!ok) return;
+      toast("Reiniciando " + s.name + "...");
+      post("/api/swarm/action", { id: s.name, action: "restart" }).then(function () {
+        toast("Servico " + s.name + " reiniciando");
+        setTimeout(refresh, 1500);
+      }).catch(function (e) { toast("Erro: " + e.message, true); });
+    });
+  }
+
+  var modalTimer = null, modalOpen = false;
+  function openModal(title, tools, content, opts) {
+    opts = opts || {};
+    $("modal-title").textContent = title;
+    $("modal").classList.toggle("menu", !!opts.menu);
+    add(clear($("modal-tools")), [tools, h("button", { class: "btn close-x", onclick: closeModal }, MOBILE.matches ? "FECHAR" : "FECHAR [ESC]")]);
+    add(clear($("modal-body")), [content]);
+    var m = $("modal"), box = m.querySelector(".box");
+    box.style.transform = ""; box.scrollTop = 0;
+    m.classList.remove("hidden");
+    document.body.classList.add("noscroll");
+    if (!modalOpen) { try { history.pushState({ sheet: 1 }, ""); } catch (_) {} }
+    modalOpen = true;
+  }
+  function hideModal() {
+    clearInterval(modalTimer);
+    $("modal").classList.add("hidden");
+    document.body.classList.remove("noscroll");
+    modalOpen = false;
+  }
+  function closeModal() {
+    if (!modalOpen) return;
+    if (history.state && history.state.sheet) history.back();   // dispara popstate, que esconde
+    else hideModal();
+  }
+  window.addEventListener("popstate", function () { if (modalOpen) hideModal(); });
   $("modal").addEventListener("click", function (e) { if (e.target.id === "modal") closeModal(); });
+  // arrastar a janela para baixo fecha (celular)
+  (function () {
+    var box = $("modal").querySelector(".box"), y0 = null, dy = 0;
+    box.addEventListener("touchstart", function (e) {
+      var fromGrab = e.target.closest && e.target.closest("#modal-grab, #modal-title");
+      if (!MOBILE.matches || (!fromGrab && box.scrollTop > 0)) { y0 = null; return; }
+      y0 = e.touches[0].clientY; dy = 0; box.classList.add("dragging");
+    }, { passive: true });
+    box.addEventListener("touchmove", function (e) {
+      if (y0 === null) return;
+      dy = Math.max(0, e.touches[0].clientY - y0);
+      box.style.transform = dy ? "translateY(" + dy + "px)" : "";
+    }, { passive: true });
+    box.addEventListener("touchend", function () {
+      if (y0 === null) return;
+      box.classList.remove("dragging");
+      if (dy > 110) closeModal(); else box.style.transform = "";
+      y0 = null;
+    });
+  })();
 
   function openLogs(name, label, service) {
     var pre = h("pre", { class: "logs" }, "carregando...");
@@ -421,7 +532,7 @@
             return h("div", { class: "stack-card" }, h("span", { class: "px" }, st.name),
               h("span", { class: "tag " + (okAll ? "run" : "stop") }, st.healthy + "/" + st.services + " OK"));
           })),
-          table([{ t: "STACK" }, { t: "SERVICO" }, { t: "REPLICAS" }, { t: "IMAGEM" }, { t: "DOMINIO" }, { t: "ACOES" }],
+          table([{ t: "STACK" }, { t: "SERVICO", m: "title" }, { t: "REPLICAS" }, { t: "IMAGEM" }, { t: "DOMINIO" }, { t: "ACOES" }],
             services.map(function (s) {
               var good = s.desired === null ? s.running > 0 : s.running >= s.desired;
               return h("tr", null, td(s.stack || "-", "muted"), td(s.name, "name", s.name),
@@ -430,13 +541,13 @@
                 td(s.domains.length ? s.domains.map(function (x) { return h("div", null, h("a", { href: "https://" + x, target: "_blank", rel: "noopener" }, x)); }) : "-"),
                 td([h("button", { class: "btn small", onclick: function () { openLogs(s.name, s.name, true); } }, "LOGS"), " ",
                     h("button", { class: "btn small", onclick: function () { serviceRestart(s); } }, "↻ REINICIAR")], "actions"));
-            }), { empty: "nenhum servico encontrado" })));
+            }), { empty: "nenhum servico encontrado", cards: true })));
       }
 
       var list = d.containers.filter(function (c) { return match(c.name + c.label + c.image + c.project); });
       var i = d.info;
       out.appendChild(box("CONTAINERS · " + i.running + " RODANDO · " + i.stopped + " PARADOS", "",
-        table([{ t: "ESTADO" }, { t: "NOME" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }, { t: "REDE ↓/↑", num: 1 }, { t: "STATUS" }, { t: "ACOES" }],
+        table([{ t: "ESTADO" }, { t: "NOME", m: "title" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }, { t: "REDE ↓/↑", num: 1 }, { t: "STATUS" }, { t: "ACOES" }],
           list.map(function (c) {
             var on = c.state === "running";
             return h("tr", null,
@@ -453,7 +564,7 @@
                 " ",
                 h("button", { class: "btn small", onclick: function () { openLogs(c.name, c.label); } }, "LOGS"),
                 h("button", { class: "btn small", onclick: function () { openInspect(c.name, c.label); } }, "INFO")], "actions"));
-          }), { empty: "nenhum container" })));
+          }), { empty: "nenhum container", cards: true })));
       return out;
     }
   };
@@ -471,8 +582,8 @@
     },
     load: function () { return api("/api/processes?sort=" + state.procSort + "&q=" + encodeURIComponent(state.procQuery)); },
     render: function (list) {
-      return box("PROCESSOS", "", table([{ t: "PID", num: 1, sort: "pid" }, { t: "USUARIO" }, { t: "CPU", num: 1, sort: "cpu" }, { t: "MEM", num: 1, sort: "mem" },
-                    { t: "RAM", num: 1 }, { t: "THREADS", num: 1 }, { t: "COMANDO" }],
+      return box("PROCESSOS", "", table([{ t: "PID", num: 1, sort: "pid" }, { t: "USUARIO", m: "hide" }, { t: "CPU", num: 1, sort: "cpu" }, { t: "MEM", num: 1, sort: "mem" },
+                    { t: "RAM", num: 1, m: "hide" }, { t: "THREADS", num: 1, m: "hide" }, { t: "COMANDO" }],
         list.map(function (p) {
           return h("tr", null, td(p.pid, "num"), td(p.user), td(p.cpu.toFixed(1) + "%", "num " + level(p.cpu, 50, 90)), td(p.mem.toFixed(1) + "%", "num " + level(p.mem, 30, 60)),
             td(bytes(p.rss), "num"), td(p.threads, "num"), td(p.cmd, "cmd", p.cmd));
@@ -486,10 +597,10 @@
     render: function (d) {
       var st = d.conns.states;
       return h("div", { class: "grid wide" },
-        box("INTERFACES", "span2", table([{ t: "INTERFACE" }, { t: "↓ AGORA", num: 1 }, { t: "↑ AGORA", num: 1 }, { t: "RECEBIDO", num: 1 }, { t: "ENVIADO", num: 1 }, { t: "ERROS", num: 1 }],
+        box("INTERFACES", "span2", table([{ t: "INTERFACE", m: "title" }, { t: "↓ AGORA", num: 1 }, { t: "↑ AGORA", num: 1 }, { t: "RECEBIDO", num: 1 }, { t: "ENVIADO", num: 1 }, { t: "ERROS", num: 1 }],
           d.ifaces.filter(function (i) { return i.rx_total + i.tx_total > 0; }).map(function (i) {
             return h("tr", null, td(i.name, "name"), td(rate(i.rx_rate), "num"), td(rate(i.tx_rate), "num"), td(bytes(i.rx_total), "num"), td(bytes(i.tx_total), "num"), td(i.errors, "num " + (i.errors ? "warn" : "")));
-          }))),
+          }), { cards: true })),
         box("PORTAS ABERTAS", "", table([{ t: "PORTA", num: 1 }, { t: "PROTO" }, { t: "ENDERECO" }, { t: "ACESSO" }],
           d.ports.map(function (p) {
             var pub = !/^(127\.|::1|localhost|\[?::1)/.test(p.addr) && !/%lo$/.test(p.addr);
@@ -565,11 +676,13 @@
         box("SEU ACESSO", "", kv([["Usuario", me.user], ["2FA", me.totp ? h("span", { class: "ok" }, "ATIVO") : h("span", { class: "warn" }, "DESATIVADO (sudo vmpanel 2fa-on)")],
             ["Seu IP", me.ip], ["Sessoes abertas", d.sessions.length]]),
           h("hr", { class: "sep" }),
-          table([{ t: "IP" }, { t: "ENTROU EM" }, { t: "NAVEGADOR" }], d.sessions.map(function (s) {
+          table([{ t: "IP", m: "title" }, { t: "ENTROU EM" }, { t: "NAVEGADOR" }], d.sessions.map(function (s) {
             return h("tr", null, td(s.ip), td(when(s.created)), td(s.ua, "cmd", s.ua));
-          })),
+          }), { cards: true }),
           h("p", null, h("button", { class: "btn danger", onclick: function () {
-            if (confirm("Encerrar TODAS as sessoes (inclusive esta)?")) post("/api/sessions/revoke").then(function () { location.href = "/login"; });
+            ask("ENCERRAR SESSOES?", "Todas as sessoes abertas serao encerradas, inclusive esta.", "ENCERRAR", true).then(function (ok) {
+              if (ok) post("/api/sessions/revoke").then(function () { location.href = "/login"; });
+            });
           } }, "ENCERRAR TODAS AS SESSOES"))),
         box("ATAQUES SSH (24H)", "", !ssh.available ? h("p", { class: "muted" }, "Sem acesso ao log do SSH.") : h("div", { class: "stack" },
           h("div", { class: "big " + (ssh.failed_24h > 100 ? "warn" : "ok") }, ssh.failed_24h + " FALHAS"),
@@ -577,9 +690,9 @@
           table([{ t: "IP ATACANTE" }, { t: "TENTATIVAS", num: 1 }], ssh.top_ips.map(function (x) { return h("tr", null, td(x.ip), td(x.count, "num")); })),
           h("p", { class: "label" }, "Usuarios que tentaram"),
           h("p", { class: "muted" }, ssh.top_users.map(function (x) { return x.user + " (" + x.count + ")"; }).join(", ") || "-"))),
-        box("REGISTRO DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO" }, { t: "IP" }, { t: "DETALHE" }], d.events.map(function (e) {
+        box("REGISTRO DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO", m: "title" }, { t: "IP" }, { t: "DETALHE" }], d.events.slice(0, MOBILE.matches ? 25 : 500).map(function (e) {
           return h("tr", null, td(when(e.ts)), td(kinds[e.kind] || e.kind.toUpperCase(), /fail|lock|alert/.test(e.kind) ? "warn" : ""), td(e.ip || "-"), td(e.detail, "cmd", e.detail));
-        }))));
+        }), { cards: true })));
     }
   };
 
@@ -618,7 +731,18 @@
   };
 
   // ---------- TERMINAL
-  var term = null, termWs = null, termFit = null, termResize = null;
+  var term = null, termWs = null, termFit = null, termResize = null, termCtrl = null;
+  function termSend(data) { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "input", data: data })); }
+  // teclas que faltam no teclado do celular
+  function keybar() {
+    var ctrl = h("button", { class: "key", onclick: function () { ctrl.classList.toggle("on"); if (term) term.focus(); } }, "CTRL");
+    termCtrl = ctrl;
+    var keys = [["ESC", "\x1b"], ["TAB", "\t"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"],
+                ["|", "|"], ["/", "/"], ["-", "-"], ["~", "~"], ["^C", "\x03"], ["^D", "\x04"]];
+    return h("div", { class: "keybar" }, ctrl, keys.map(function (k) {
+      return h("button", { class: "key", onclick: function () { buzz(); termSend(k[1]); if (term) term.focus(); } }, k[0]);
+    }));
+  }
   function loadXterm() {
     if (window.Terminal && window.FitAddon) return Promise.resolve();
     function js(src) {
@@ -631,13 +755,18 @@
   function closeTerminal() {
     if (termWs) { try { termWs.close(); } catch (_) {} termWs = null; }
     if (term) { term.dispose(); term = null; }
-    if (termResize) { window.removeEventListener("resize", termResize); termResize = null; }
+    if (termResize) {
+      window.removeEventListener("resize", termResize);
+      if (window.visualViewport) window.visualViewport.removeEventListener("resize", termResize);
+      termResize = null;
+    }
+    document.body.classList.remove("kbd");
   }
   function startTerminal(holder, status) {
     loadXterm().then(function () {
       closeTerminal();
       term = new window.Terminal({
-        cursorBlink: true, fontSize: 14, scrollback: 5000,
+        cursorBlink: true, fontSize: MOBILE.matches ? 12 : 14, scrollback: 5000,
         fontFamily: "'Cascadia Mono', 'DejaVu Sans Mono', Menlo, monospace",
         theme: { background: "#0d0e17", foreground: "#f4f4f4", cursor: "#ffcd75", selectionBackground: "#3b5dc9",
                  black: "#1a1c2c", red: "#b13e53", green: "#38b764", yellow: "#ffcd75", blue: "#3b5dc9", magenta: "#5d275d",
@@ -651,19 +780,40 @@
       var proto = location.protocol === "https:" ? "wss://" : "ws://";
       termWs = new WebSocket(proto + location.host + "/api/term?cols=" + term.cols + "&rows=" + term.rows);
       termWs.binaryType = "arraybuffer";
-      termWs.onopen = function () { status.textContent = "CONECTADO"; status.className = "tag run"; term.focus(); };
+      termWs.onopen = function () {
+        status.textContent = "CONECTADO"; status.className = "tag run";
+        if (termResize) termResize();
+        if (!MOBILE.matches) term.focus();   // no celular o teclado so abre quando tocar no terminal
+      };
       termWs.onmessage = function (e) { term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data)); };
       termWs.onclose = function () {
         status.textContent = "DESCONECTADO"; status.className = "tag stop";
         if (term) term.write("\r\n\x1b[33m[sessao encerrada - clique em RECONECTAR]\x1b[0m\r\n");
       };
-      term.onData(function (data) { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "input", data: data })); });
+      term.onData(function (data) {
+        if (termCtrl && termCtrl.classList.contains("on") && data.length === 1) {   // CTRL fixo: proxima letra vira Ctrl+letra
+          var c = data.toUpperCase().charCodeAt(0);
+          if (c >= 64 && c <= 95) data = String.fromCharCode(c - 64);
+          termCtrl.classList.remove("on");
+        }
+        termSend(data);
+      });
       termResize = function () {
         if (!term) return;
+        if (MOBILE.matches) {   // no celular o terminal ocupa o que sobra acima do teclado virtual
+          var vv = window.visualViewport, vh = vv ? vv.height : window.innerHeight;
+          document.body.classList.toggle("kbd", vh < window.innerHeight * 0.8 || (vv && vh < screen.height * 0.6));
+          var kb = holder.nextSibling, nav = $("bnav");
+          var used = holder.getBoundingClientRect().top - (vv ? vv.offsetTop : 0) + (kb ? kb.offsetHeight : 0) +
+                     (document.body.classList.contains("kbd") ? 0 : nav.offsetHeight) + 14;
+          holder.style.height = Math.max(160, vh - used) + "px";
+        }
         termFit.fit();
         if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       };
       window.addEventListener("resize", termResize);
+      if (window.visualViewport) window.visualViewport.addEventListener("resize", termResize);
+      termResize();
     }).catch(function () { toast("Nao consegui carregar o terminal", true); });
   }
   VIEWS.term = {
@@ -688,8 +838,8 @@
       var wrap = h("div", { class: "stack" },
         h("div", { class: "toolbar" }, status,
           h("button", { class: "btn", onclick: function () { startTerminal(holder, status); } }, "↻ RECONECTAR"),
-          h("span", { class: "muted" }, "Dica: copie com Ctrl+Shift+C e cole com Ctrl+Shift+V. Tudo que acontece aqui fica no registro do painel.")),
-        holder);
+          h("span", { class: "muted hide-m" }, "Dica: copie com Ctrl+Shift+C e cole com Ctrl+Shift+V. Tudo que acontece aqui fica no registro do painel.")),
+        holder, keybar());
       setTimeout(function () { startTerminal(holder, status); }, 30);
       return wrap;
     }
@@ -724,6 +874,13 @@
           box("VISUAL (NESTE NAVEGADOR)", "",
             h("label", { class: "f" }, h("span", null, "Tema"), themeSel),
             h("label", { class: "chk" }, h("input", { type: "checkbox", checked: prefs.crt, onchange: function (e) { prefs.crt = e.target.checked; savePref("vmp_crt2", prefs.crt ? "1" : "0"); applyPrefs(); } }), "Efeito de TV antiga (scanlines)")),
+          box("APP NO CELULAR", "",
+            standalone() ? h("p", { class: "ok" }, "Voce esta usando o app instalado.") :
+              h("p", null, "Instale o painel como app: abre em tela cheia, com icone proprio e menu embaixo."),
+            standalone() ? null : (function (t) {
+              return t ? h("div", { class: "tiles" }, t) : h("p", { class: "muted" },
+                "No Chrome do Android: menu ⋮ > Instalar app. No iPhone: Compartilhar > Adicionar a Tela de Inicio.");
+            })(installTile())),
           box("COMANDOS NA VM", "", h("pre", { class: "logs" },
             "# atualizar o painel\ncurl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/update.sh | sudo bash\n\n" +
             "# remover o painel\ncurl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/uninstall.sh | sudo bash\n\n" +
@@ -749,7 +906,7 @@
       state.version = v;
       var b = $("btn-update");
       clear(b);
-      add(b, ["★ ATUALIZAR PAINEL", v.ok && v.behind ? h("span", { class: "badge-new" }, "NEW") : null]);
+      add(b, ["★", h("span", { class: "t" }, " ATUALIZAR PAINEL"), v.ok && v.behind ? h("span", { class: "badge-new" }, "NEW") : null]);
       return v;
     }).catch(function () { return null; });
   }
@@ -800,6 +957,71 @@
     }, 2500);
   }
 
+  // ------------------------------------------------------------------ celular: menu inferior, "MAIS" e puxar para atualizar
+  var BNAV = ["dash", "docker", "procs", "term"];
+  var SHORT = { dash: "STATUS", docker: "DOCKER", procs: "PROC", term: "TERM", more: "MAIS" };
+  function buildBottomNav() {
+    add($("bnav"), BNAV.concat(["more"]).map(function (id) {
+      return h("button", { "data-id": id, onclick: function () { buzz(); if (id === "more") openMore(); else { if (modalOpen) closeModal(); show(id); } } },
+        icon(id), h("span", null, SHORT[id]));
+    }));
+  }
+  function isIOS() { return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); }
+  function standalone() { return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; }
+  function installTile() {
+    if (standalone()) return null;
+    if (window.vmpInstall) return tile("install", "INSTALAR APP", function () {
+      var p = window.vmpInstall; window.vmpInstall = null; closeModal();
+      p.prompt(); p.userChoice.then(function (c) { if (c.outcome === "accepted") toast("App instalado! Procure o VM PANEL na tela inicial."); });
+    }, "gold");
+    if (isIOS()) return tile("install", "INSTALAR APP", function () {
+      openModal("INSTALAR NO IPHONE", null, h("div", { class: "stack" },
+        h("p", null, "1. Toque no botao Compartilhar do Safari (o quadrado com a seta para cima)."),
+        h("p", null, "2. Escolha \"Adicionar a Tela de Inicio\"."),
+        h("p", null, "3. Abra o VM PANEL pelo icone novo: ele abre em tela cheia, como um app.")));
+    }, "gold");
+    return null;
+  }
+  function tile(ic, label, fn, cls) {
+    return h("button", { class: "tile " + (cls || ""), onclick: function () { buzz(); fn(); } }, icon(ic), h("span", null, label));
+  }
+  function goTab(id) { closeModal(); setTimeout(function () { show(id); }, 60); }
+  function openMore() {
+    var tabs = TABS.filter(function (t) { return BNAV.indexOf(t.id) < 0; });
+    var who = state.me ? state.me.user : "?";
+    openModal("MENU", null, h("div", { class: "stack" },
+      h("div", { class: "tiles" }, tabs.map(function (t) {
+        return tile(t.id, t.name, function () { goTab(t.id); }, current && current.id === t.id ? "on" : "");
+      })),
+      h("hr", { class: "sep" }),
+      h("div", { class: "tiles" },
+        tile("refresh", "ATUALIZAR DADOS", function () { closeModal(); refresh().then(function () { toast("Dados atualizados"); }); }),
+        tile("star", "ATUALIZAR PAINEL" + (state.version && state.version.behind ? " (NEW)" : ""), function () { closeModal(); setTimeout(openUpdate, 80); }),
+        installTile(),
+        tile("power", "SAIR", logout, "danger")),
+      h("p", { class: "muted center" }, "PLAYER " + who + " · v" + ((state.me && state.me.version) || "?") + " · " + $("uptime").textContent)), { menu: true });
+  }
+  function logout() { post("/api/logout").then(function () { location.href = "/login"; }); }
+
+  // puxar a tela para baixo atualiza (como nos apps)
+  (function () {
+    var y0 = null, dy = 0, ptr = $("ptr");
+    window.addEventListener("touchstart", function (e) {
+      y0 = (window.scrollY <= 0 && !modalOpen && current && current.id !== "term") ? e.touches[0].clientY : null; dy = 0;
+    }, { passive: true });
+    window.addEventListener("touchmove", function (e) {
+      if (y0 === null) return;
+      dy = e.touches[0].clientY - y0;
+      if (dy > 20) { ptr.classList.add("show"); ptr.classList.toggle("ready", dy > 90); ptr.style.height = Math.min(60, dy / 2) + "px"; }
+    }, { passive: true });
+    window.addEventListener("touchend", function () {
+      if (y0 === null) return;
+      if (dy > 90) { buzz(); refresh().then(function () { toast("Dados atualizados"); }); }
+      ptr.classList.remove("show", "ready"); ptr.style.height = "";
+      y0 = null;
+    });
+  })();
+
   // ------------------------------------------------------------------ teclado e inicio
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") { closeModal(); return; }
@@ -817,7 +1039,9 @@
     }));
     $("btn-refresh").addEventListener("click", function () { if (current) { refresh().then(function () { toast("Dados atualizados"); }); } });
     $("btn-update").addEventListener("click", openUpdate);
-    $("btn-logout").addEventListener("click", function () { post("/api/logout").then(function () { location.href = "/login"; }); });
+    $("btn-logout").addEventListener("click", logout);
+    buildBottomNav();
+    document.addEventListener("vmp-installable", function () { if (current && current.id === "config") refresh(); });
     api("/api/me").then(function (me) {
       state.me = me;
       var start = (location.hash || "").slice(1);
