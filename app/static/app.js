@@ -98,9 +98,36 @@
       h("span", { class: "val " + level(p, (opts || {}).w, (opts || {}).c) }, valText === undefined ? pct(p) : valText));
   }
   function box(title, cls) {
-    var b = h("section", { class: "box " + (cls || "") }, h("h2", null, title));
+    var b = h("section", { class: "box " + (cls || "") }, title ? h("h2", null, title) : null);
     add(b, Array.prototype.slice.call(arguments, 2));
     return b;
+  }
+  // topico: titulo pequeno + linha, agrupa cartoes relacionados
+  function section(title, hint) {
+    var sec = h("section", { class: "section" }, h("div", { class: "section-head" }, h("h3", null, title), hint ? h("span", { class: "hint" }, hint) : null, h("i")));
+    add(sec, Array.prototype.slice.call(arguments, 2));
+    return sec;
+  }
+  // numero grande do resumo
+  function kpi(label, value, p, sub, opts) {
+    opts = opts || {};
+    var el = h(opts.go ? "button" : "div", { class: "kpi", onclick: opts.go ? function () { show(opts.go); } : null },
+      h("span", { class: "label" }, label),
+      h("span", { class: "v " + (p === null || p === undefined ? "" : level(p, opts.w, opts.c)) }, value),
+      h("span", { class: "s", title: typeof sub === "string" ? sub : null }, sub),
+      p === null || p === undefined ? null : hp(p, { sm: 1, w: opts.w, c: opts.c }));
+    return el;
+  }
+  // "24.7 KB/s" -> numero grande + unidade pequena
+  function unit(txt) {
+    var i = txt.indexOf(" ");
+    return i < 0 ? txt : h("span", null, txt.slice(0, i), h("small", null, " " + txt.slice(i + 1)));
+  }
+  function legend(items) {
+    return h("div", { class: "legend" }, items.map(function (it) {
+      var dot = h("i"); dot.style.background = it[1];
+      return h("span", null, dot, it[0]);
+    }));
   }
   function kv(pairs) {
     var d = h("div", { class: "kv" });
@@ -152,8 +179,8 @@
   }
 
   // ------------------------------------------------------------------ preferencias
-  var THEMES = [["16bit", "16-BIT (padrao)"], ["nes", "NES"], ["arcade", "ARCADE NEON"], ["gameboy", "GAME BOY"]];
-  var prefs = { theme: "16bit", crt: false };
+  var THEMES = [["minimal", "MINIMAL (padrao)"], ["nes", "NES"], ["arcade", "ARCADE NEON"], ["gameboy", "GAME BOY"]];
+  var prefs = { theme: "minimal", crt: false };
   try {
     var t = localStorage.getItem("vmp_theme2");
     if (THEMES.some(function (x) { return x[0] === t; })) prefs.theme = t;
@@ -178,7 +205,7 @@
     canvas.width = W; canvas.height = H;
     var c = canvas.getContext("2d");
     c.imageSmoothingEnabled = false;
-    c.fillStyle = css("--ink"); c.fillRect(0, 0, W, H);
+    c.fillStyle = css("--chart-bg"); c.fillRect(0, 0, W, H);
     var max = opts.max || 0;
     series.forEach(function (s) { s.data.forEach(function (v) { if (v > max) max = v; }); });
     if (!max) max = 1;
@@ -419,7 +446,7 @@
     load: function () { return api("/api/overview"); },
     render: function (d) {
       var n = d.now || {};
-      if (!n.cpu) return box("AGUARDE", "", h("p", null, "Coletando a primeira leitura..."));
+      if (!n.cpu) return box(null, "", h("p", { class: "muted" }, "Coletando a primeira leitura..."));
       var s = d.static, m = n.memory, dk = d.docker || {};
       pushLive("cpu", n.cpu.percent); pushLive("mem", m.percent);
       pushLive("rx", n.net.rx_rate); pushLive("tx", n.net.tx_rate);
@@ -428,63 +455,75 @@
       var alerts = (d.alerts || []).slice();
       if (d.reboot_required) alerts.push("Reinicio pendente (atualizacao do kernel)");
       var o = d.oracle || {};
+      var root = n.disks.filter(function (x) { return x.mount === "/"; })[0] || n.disks[0] || { percent: 0, free: 0, mount: "/" };
+      var di = dk.info || {};
 
-      return h("div", { class: "grid" },
+      // 1) resumo: o que importa em uma linha
+      var summary = section("RESUMO", "ao vivo", h("div", { class: "kpis" },
+        kpi("CPU", pct(n.cpu.percent), n.cpu.percent, s.cpu_count + " nucleos · carga " + n.load[0].toFixed(2)),
+        kpi("MEMORIA", pct(m.percent), m.percent, bytes(m.used) + " de " + bytes(m.total)),
+        kpi("DISCO " + root.mount, pct(root.percent), root.percent, bytes(root.free) + " livres", { w: 80, c: 90 }),
+        kpi("REDE ↓", unit(rate(n.net.rx_rate)), null, "↑ " + rate(n.net.tx_rate) + " upload"),
+        dk.available ? kpi("CONTAINERS", h("span", { class: di.stopped ? "warn" : "" }, di.running, h("small", null, "/" + di.containers)), null,
+          di.stopped ? di.stopped + " parado(s)" : "todos rodando", { go: "docker" }) : null,
+        kpi("ALERTAS", alerts.length ? h("span", { class: "warn" }, alerts.length) : h("span", { class: "ok" }, "OK"), null,
+          alerts.length ? alerts[0] : "nada para se preocupar")));
+
+      // 2) recursos em detalhe
+      var cores = h("details", { class: "more", open: state.coresOpen },
+        h("summary", null, "uso por nucleo"),
+        h("div", { class: "cores" }, n.cpu.cores.map(function (p, i) { return stat("#" + i, p, Math.round(p) + "%", { sm: 1 }); })));
+      cores.addEventListener("toggle", function () { state.coresOpen = cores.open; });
+      var resources = section("RECURSOS", null, h("div", { class: "grid" },
         box("CPU", "",
-          h("div", { class: "row" }, h("span", { class: "big " + level(n.cpu.percent) }, pct(n.cpu.percent)),
-            h("span", { class: "muted" }, s.cpu_count + " nucleos")),
           h("canvas", { class: "spark", id: "sp-cpu" }),
-          h("hr", { class: "sep" }),
-          h("div", { class: "cores" }, n.cpu.cores.map(function (p, i) { return stat("#" + i, p, Math.round(p) + "%", { sm: 1 }); })),
-          h("hr", { class: "sep" }),
-          kv([["Carga (1/5/15 min)", n.load.map(function (x) { return x.toFixed(2); }).join("  /  ")],
-              ["Steal (CPU roubada)", h("span", { class: n.cpu.steal > 5 ? "warn" : "" }, pct(n.cpu.steal))]])),
+          kv([["Carga", n.load.map(function (x) { return x.toFixed(2); }).join("  ")],
+              ["Steal", h("span", { class: n.cpu.steal > 5 ? "warn" : "" }, pct(n.cpu.steal))],
+              ["Processos", n.procs.total + " (" + n.procs.running + " rodando" + (n.procs.zombie ? ", " + n.procs.zombie + " zumbi" : "") + ")"]]),
+          cores),
         box("MEMORIA", "",
-          h("div", { class: "row" }, h("span", { class: "big " + level(m.percent) }, pct(m.percent)),
-            h("span", { class: "muted" }, bytes(m.used) + " de " + bytes(m.total))),
           h("canvas", { class: "spark", id: "sp-mem" }),
+          h("div", { class: "stack" }, stat("RAM", m.percent), m.swap_total ? stat("SWAP", m.swap_percent) : null),
           h("hr", { class: "sep" }),
-          stat("RAM", m.percent),
-          m.swap_total ? stat("SWAP", m.swap_percent) : null,
-          h("hr", { class: "sep" }),
-          kv([["Livre de verdade", bytes(m.available)], ["Cache", bytes(m.cached)],
+          kv([["Disponivel", bytes(m.available)], ["Cache", bytes(m.cached)],
               ["Swap", m.swap_total ? bytes(m.swap_used) + " de " + bytes(m.swap_total) : "desativado"]])),
         box("DISCOS", "", h("div", { class: "stack" }, n.disks.map(function (x) {
           return h("div", null,
-            h("div", { class: "row" }, h("b", null, x.mount), h("span", { class: "muted" }, bytes(x.free) + " livres de " + bytes(x.total))),
-            stat("USO", x.percent, undefined, { w: 80, c: 90 }));
+            h("div", { class: "row" }, h("span", null, x.mount), h("span", { class: "muted" }, bytes(x.free) + " livres")),
+            h("div", { class: "stat" }, h("span"), hp(x.percent, { w: 80, c: 90 }), h("span", { class: "val " + level(x.percent, 80, 90) }, pct(x.percent))));
         })), h("hr", { class: "sep" }),
           kv([["Leitura", rate(n.io.read_rate)], ["Escrita", rate(n.io.write_rate)]])),
         box("REDE", "",
-          h("div", { class: "row" }, h("span", null, h("span", { class: "label" }, "DOWNLOAD"), h("div", { class: "mid ok" }, "↓ " + rate(n.net.rx_rate))),
-            h("span", null, h("span", { class: "label" }, "UPLOAD"), h("div", { class: "mid", text: "↑ " + rate(n.net.tx_rate) }))),
           h("canvas", { class: "spark", id: "sp-net" }),
-          h("p", { class: "muted" }, "verde = download, azul = upload"),
-          table([{ t: "INTERFACE" }, { t: "RECEBIDO", num: 1 }, { t: "ENVIADO", num: 1 }], n.net.ifaces.filter(function (i) { return i.rx_total + i.tx_total > 0; }).map(function (i) {
-            return h("tr", null, td(i.name), td(bytes(i.rx_total), "num"), td(bytes(i.tx_total), "num"));
-          }))),
-        box("DOCKER", "", dk.available ? [
-          h("div", { class: "row" }, h("span", { class: "big " + (dk.info.stopped ? "warn" : "ok") }, dk.info.running + "/" + dk.info.containers),
-            h("span", { class: "muted" }, "containers rodando")),
-          dk.info.stopped ? h("p", { class: "warn" }, dk.info.stopped + " container(s) parado(s)") : null,
-          h("p", { class: "label" }, "Quem mais usa CPU agora"),
-          table([{ t: "SERVICO" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }], dk.top.map(function (c) {
+          legend([["download", css("--ok-2")], ["upload", css("--accent-2")]]),
+          kv(n.net.ifaces.filter(function (i) { return i.rx_total + i.tx_total > 0; }).slice(0, 4).map(function (i) {
+            return [i.name, "↓ " + bytes(i.rx_total) + "  ↑ " + bytes(i.tx_total)];
+          })))));
+
+      // 3) atividade: docker e avisos lado a lado
+      var activity = section("ATIVIDADE", null, h("div", { class: "grid" },
+        dk.available ? box("DOCKER · QUEM MAIS USA CPU", "span2",
+          table([{ t: "CONTAINER" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }], dk.top.map(function (c) {
             return h("tr", null, td(c.label || c.name, "name", c.name), td(pct(c.cpu), "num " + level(c.cpu, 50, 90)), td(bytes(c.mem_used), "num"));
           })),
-          h("p", null, h("button", { class: "btn small", onclick: function () { show("docker"); } }, "VER TODOS ▶"))
-        ] : h("p", { class: "muted" }, "Docker nao disponivel neste host.")),
+          h("p", null, h("button", { class: "btn small", onclick: function () { show("docker"); } }, "VER TODOS ▸"))) : null,
+        box("ALERTAS", "", alerts.length ? h("div", { class: "stack" }, alerts.map(function (a) { return h("div", { class: "warn" }, "▲ " + a); }))
+          : h("p", { class: "ok" }, "Tudo certo. Nenhum alerta ativo."))));
+
+      // 4) a maquina
+      var system = section("MAQUINA", null, h("div", { class: "grid" },
         box("SISTEMA", "",
-          kv([["Maquina", s.hostname], ["Sistema", s.os], ["Kernel", s.kernel], ["Arquitetura", s.arch], ["Processador", s.cpu_model],
-              ["Processos", n.procs.total + " (" + n.procs.running + " rodando" + (n.procs.zombie ? ", " + n.procs.zombie + " zumbi" : "") + ")"],
+          kv([["Maquina", s.hostname], ["Sistema", s.os], ["Kernel", s.kernel], ["Arquitetura", s.arch + " · " + s.cpu_count + " vCPU"],
               ["Ligada ha", dur(n.uptime)],
               ["Temperatura", n.temps.length ? n.temps.map(function (t) { return t.c + "°C"; }).join(" ") : "n/d"]])),
-        box("ALERTAS", "", alerts.length ? h("div", { class: "stack" }, alerts.map(function (a) { return h("div", { class: "warn" }, "⚠ " + a); }))
-          : h("div", { class: "row" }, h("span", { class: "mid ok" }, "ALL CLEAR!"), h("span", { class: "muted" }, "Nenhum alerta ativo"))),
         box("ORACLE FREE TIER", "",
-          h("p", { class: "muted" }, "A Oracle pode recuperar VMs gratuitas ociosas (CPU p95 abaixo de 20% em 7 dias)."),
-          o.cpu_p95 === null || o.cpu_p95 === undefined ? h("p", null, "Coletando dados (" + (o.days || 0) + " dias)...") :
-            h("div", { class: "stack" }, stat("CPU95", o.cpu_p95, pct(o.cpu_p95)), stat("RAM95", o.mem_p95 || 0, pct(o.mem_p95)),
-              kv([["Dados coletados", o.days + " dias"], ["Situacao", o.at_risk ? h("span", { class: "warn" }, "RISCO DE RECUPERACAO") : h("span", { class: "ok" }, "SEGURA")]]))));
+          o.cpu_p95 === null || o.cpu_p95 === undefined ? h("p", { class: "muted" }, "Coletando dados (" + (o.days || 0) + " dias)...") :
+            h("div", { class: "stack" },
+              h("p", { class: o.at_risk ? "warn" : "ok" }, o.at_risk ? "Risco: a Oracle pode recuperar esta VM por ociosidade." : "VM segura contra a regra de ociosidade."),
+              stat("CPU95", o.cpu_p95, pct(o.cpu_p95)), stat("RAM95", o.mem_p95 || 0, pct(o.mem_p95))),
+          h("p", { class: "muted" }, "A Oracle recupera VMs gratuitas com CPU p95 abaixo de 20% por 7 dias."))));
+
+      return h("div", null, summary, resources, activity, system);
     },
     after: function () {
       drawChart($("sp-cpu"), [{ data: live.cpu, fill: true }], { max: 100 });
@@ -495,11 +534,10 @@
 
   function updateHeader(d) {
     var s = d.static;
-    $("subtitle").textContent = "HOST " + s.hostname.toUpperCase() + " · v" + d.version;
+    $("subtitle").textContent = s.hostname + " · v" + d.version;
     var chips = clear($("chips"));
-    [["SO", s.os], ["CPU", s.cpu_count + " vCPU " + s.arch], ["RAM", bytes(d.now.memory.total)],
-     ["PLAYER", (state.me && state.me.user) || "?"]].forEach(function (c) {
-      chips.appendChild(h("span", { class: "chip" }, h("b", null, c[0] + " "), c[1]));
+    [s.os, s.cpu_count + " vCPU · " + s.arch, bytes(d.now.memory.total) + " RAM", "player " + ((state.me && state.me.user) || "?")].forEach(function (c) {
+      chips.appendChild(h("span", { class: "chip" }, c));
     });
     $("uptime").textContent = "ligada ha " + dur(d.now.uptime);
   }
@@ -522,11 +560,11 @@
         h("p", { class: "muted" }, "Se acabou de instalar o Docker, rode na VM: sudo vmpanel restart"));
       var q = state.dockerQuery.toLowerCase();
       function match(txt) { return !q || txt.toLowerCase().indexOf(q) >= 0; }
-      var out = h("div", { class: "stack" });
+      var out = h("div");
 
       if (sw.active) {
         var services = sw.services.filter(function (s) { return match(s.name + s.image + s.stack + s.domains.join(" ")); });
-        out.appendChild(box("DOCKER SWARM · " + sw.stacks.length + " STACKS · " + sw.services.length + " SERVICOS", "",
+        out.appendChild(section("SWARM", sw.stacks.length + " stacks · " + sw.services.length + " servicos", box(null, "",
           h("div", { class: "stacks" }, sw.stacks.map(function (st) {
             var okAll = st.healthy === st.services;
             return h("div", { class: "stack-card" }, h("span", { class: "px" }, st.name),
@@ -541,12 +579,12 @@
                 td(s.domains.length ? s.domains.map(function (x) { return h("div", null, h("a", { href: "https://" + x, target: "_blank", rel: "noopener" }, x)); }) : "-"),
                 td([h("button", { class: "btn small", onclick: function () { openLogs(s.name, s.name, true); } }, "LOGS"), " ",
                     h("button", { class: "btn small", onclick: function () { serviceRestart(s); } }, "↻ REINICIAR")], "actions"));
-            }), { empty: "nenhum servico encontrado", cards: true })));
+            }), { empty: "nenhum servico encontrado", cards: true }))));
       }
 
       var list = d.containers.filter(function (c) { return match(c.name + c.label + c.image + c.project); });
       var i = d.info;
-      out.appendChild(box("CONTAINERS · " + i.running + " RODANDO · " + i.stopped + " PARADOS", "",
+      out.appendChild(section("CONTAINERS", i.running + " rodando · " + i.stopped + " parados", box(null, "",
         table([{ t: "ESTADO" }, { t: "NOME", m: "title" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }, { t: "REDE ↓/↑", num: 1 }, { t: "STATUS" }, { t: "ACOES" }],
           list.map(function (c) {
             var on = c.state === "running";
@@ -564,7 +602,7 @@
                 " ",
                 h("button", { class: "btn small", onclick: function () { openLogs(c.name, c.label); } }, "LOGS"),
                 h("button", { class: "btn small", onclick: function () { openInspect(c.name, c.label); } }, "INFO")], "actions"));
-          }), { empty: "nenhum container", cards: true })));
+          }), { empty: "nenhum container", cards: true }))));
       return out;
     }
   };
@@ -690,7 +728,7 @@
           table([{ t: "IP ATACANTE" }, { t: "TENTATIVAS", num: 1 }], ssh.top_ips.map(function (x) { return h("tr", null, td(x.ip), td(x.count, "num")); })),
           h("p", { class: "label" }, "Usuarios que tentaram"),
           h("p", { class: "muted" }, ssh.top_users.map(function (x) { return x.user + " (" + x.count + ")"; }).join(", ") || "-"))),
-        box("REGISTRO DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO", m: "title" }, { t: "IP" }, { t: "DETALHE" }], d.events.slice(0, MOBILE.matches ? 25 : 500).map(function (e) {
+        box("REGISTRO DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO", m: "title" }, { t: "IP" }, { t: "DETALHE" }], d.events.slice(0, MOBILE.matches ? 25 : 60).map(function (e) {
           return h("tr", null, td(when(e.ts)), td(kinds[e.kind] || e.kind.toUpperCase(), /fail|lock|alert/.test(e.kind) ? "warn" : ""), td(e.ip || "-"), td(e.detail, "cmd", e.detail));
         }), { cards: true })));
     }

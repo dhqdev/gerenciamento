@@ -1,6 +1,6 @@
 # VM//PANEL
 
-Painel de monitoramento da sua VM com cara de videogame 16 bits (caixas de diálogo de RPG, barras de HP, fonte pixelada). Mostra CPU, RAM, discos, rede, processos, Docker e Swarm, segurança e histórico, tem **terminal da VM no navegador** e **botão para se atualizar sozinho**, tudo protegido por um login único.
+Painel de monitoramento da sua VM com visual retrô minimalista (fundo escuro, uma cor de destaque, títulos em fonte pixel), organizado por tópicos: resumo, recursos, atividade e máquina. Mostra CPU, RAM, discos, rede, processos, Docker e Swarm, segurança e histórico, tem **terminal da VM no navegador** e **botão para se atualizar sozinho**, tudo protegido por um login único.
 
 ```
  __   ____  __    __  __  ___  _   _  _ ___ _
@@ -91,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/install.s
 
 **Alertas:** CPU ou memória altas por X minutos, disco cheio, container que parou e cada novo login no painel. Chegam no Discord (webhook) e/ou Telegram (bot).
 
-**Atalhos e temas:** as teclas `1` a `9` e `0` trocam de aba, `R` atualiza os dados e `Esc` fecha janelas. Temas: **16-BIT** (padrão), **NES**, **ARCADE NEON** e **GAME BOY**, mais o efeito opcional de TV antiga (scanlines).
+**Atalhos e temas:** as teclas `1` a `9` e `0` trocam de aba, `R` atualiza os dados e `Esc` fecha janelas. Temas: **MINIMAL** (padrão), **NES**, **ARCADE NEON** e **GAME BOY**, mais o efeito opcional de TV antiga (scanlines).
 
 **Terminal web:** quem abre o shell é um pequeno agente root (`vmpanel-agent`) que só aceita conexões do serviço do painel por um socket local. O shell roda com o seu usuário normal da VM (ex.: `ubuntu`), então use `sudo` para comandos de administrador. Para trocar o usuário: `sudo vmpanel terminal user root`. Para desligar o terminal de vez: `sudo vmpanel terminal off`.
 

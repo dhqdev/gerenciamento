@@ -1,7 +1,7 @@
 /* VM//PANEL - service worker do app (PWA).
  * Rede primeiro para tudo; o cache so serve para abrir o app sem internet.
  * A API nunca e guardada: dados da VM sao sempre ao vivo. */
-var CACHE = "vmpanel-v3";
+var CACHE = "vmpanel-v4";
 var SHELL = ["/static/style.css", "/static/app.js", "/static/pwa.js", "/static/login.js", "/static/offline.html",
              "/static/sprite.svg", "/static/icons/icon-192.png"];
 
