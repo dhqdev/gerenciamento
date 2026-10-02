@@ -29,6 +29,22 @@ O instalador vai:
 
 Funciona em x86_64 e ARM (Ampere A1 do Always Free).
 
+### Atualizar e remover (um comando cada)
+
+```bash
+# atualizar para a ultima versao
+curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/update.sh | sudo bash
+
+# remover o painel por completo (sem perguntas)
+curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/uninstall.sh | sudo bash
+```
+
+A remoção apaga só o que é do painel: o serviço, a ponte `vmpanel-proxy`, as regras de firewall do painel, os dados e as credenciais. Docker, Traefik, Portainer e os seus containers não são tocados.
+
+### VM que já tem Traefik (Docker Swarm, Portainer, etc.)
+
+Se as portas 80/443 já são do Traefik, o instalador detecta isso sozinho e **não instala o Caddy**. Ele lê a rede, o entrypoint e o certresolver que os seus serviços já usam, e publica o painel no Traefik por uma ponte pequena (`vmpanel-proxy`, imagem `alpine/socat`, 32 MB de memória). O certificado HTTPS é emitido e renovado pelo próprio Traefik. Nenhum serviço, stack ou regra existente é alterado. Se as portas estiverem ocupadas por outro programa, o instalador para e avisa, sem mexer nelas.
+
 ### Antes de instalar
 
 - **DNS:** crie um registro `A` no seu provedor de domínio apontando `painel.seudominio.com` para o IP público da VM. Se usar Cloudflare, deixe em "DNS only" (nuvem cinza) pelo menos até o certificado ser emitido.
