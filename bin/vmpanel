@@ -331,10 +331,20 @@ install_service() {
   [ -f "$ENV_FILE" ] || printf 'VMPANEL_HOST=127.0.0.1\nVMPANEL_PORT=8787\n' > "$ENV_FILE"
   chmod 0640 "$ENV_FILE"; chown root:"$SVC_USER" "$ENV_FILE"
   install -m 0644 "$APP_DIR/deploy/vmpanel.service" /etc/systemd/system/vmpanel.service
+  install -m 0644 "$APP_DIR/deploy/vmpanel-agent.service" /etc/systemd/system/vmpanel-agent.service
+  # usuario do terminal web: quem rodou o sudo (ex.: ubuntu), senao o primeiro usuario normal
+  if [ -z "$(get_env VMPANEL_TERM_USER)" ]; then
+    local tu="${SUDO_USER:-}"
+    [ -n "$tu" ] && [ "$tu" != root ] || tu="$(getent passwd 1000 | cut -d: -f1)"
+    [ -n "$tu" ] || tu="$(getent passwd ubuntu opc | head -1 | cut -d: -f1)"
+    set_env VMPANEL_TERM_USER "${tu:-root}"
+  fi
+  [ -n "$(get_env VMPANEL_TERMINAL)" ] || set_env VMPANEL_TERMINAL on
   ln -sf "$APP_DIR/bin/vmpanel" /usr/local/bin/vmpanel
   chmod 0755 "$APP_DIR/bin/vmpanel"
   systemctl daemon-reload
-  systemctl enable vmpanel >/dev/null 2>&1
+  systemctl enable vmpanel vmpanel-agent >/dev/null 2>&1
+  systemctl restart vmpanel-agent >/dev/null 2>&1 || true
 }
 
 manage() { VMPANEL_AUTH="$CONF_DIR/auth.json" python3 "$APP_DIR/app/manage.py" "$@"; }
@@ -488,7 +498,7 @@ cmd_update() {
     write_caddy "$domain"
   fi
   systemctl restart vmpanel
-  wait_up && say "Atualizado: $old -> $new" || die "Servico nao subiu apos atualizar (vmpanel logs)"
+  if wait_up; then say "Atualizado: $old -> $new"; else die "Servico nao subiu apos atualizar (vmpanel logs)"; fi
 }
 
 cmd_doctor() {
@@ -515,7 +525,7 @@ cmd_doctor() {
     local lc; lc="$(curl -sk -m 8 -o /dev/null -w "%{http_code}" --resolve "$domain:443:127.0.0.1" "https://$domain/healthz" 2>/dev/null || true)"
     [ "$lc" = "200" ] && echo "rota local ok (proxy -> painel)" || echo "rota local FALHOU (HTTP $lc)"
     local code; code="$(curl -sS -m 8 -o /dev/null -w "%{http_code}" "https://$domain/healthz" 2>/dev/null || true)"
-    [ "$code" = "200" ] && say "https://$domain respondendo (HTTP 200)" || warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"
+    if [ "$code" = "200" ]; then say "https://$domain respondendo (HTTP 200)"; else warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"; fi
   fi
   echo "== versao"; git -C "$APP_DIR" log -1 --format='%h %cd %s' --date=short 2>/dev/null || true
 }
@@ -528,8 +538,9 @@ cmd_uninstall() {
   fi
   remove_traefik_proxy quiet
   fw_clear
-  systemctl disable --now vmpanel vmpanel-firewall 2>/dev/null || true
-  rm -f /etc/systemd/system/vmpanel.service /etc/systemd/system/vmpanel-firewall.service /usr/local/bin/vmpanel
+  systemctl disable --now vmpanel vmpanel-agent vmpanel-firewall 2>/dev/null || true
+  rm -f /etc/systemd/system/vmpanel.service /etc/systemd/system/vmpanel-agent.service \
+    /etc/systemd/system/vmpanel-firewall.service /usr/local/bin/vmpanel
   systemctl daemon-reload
   disable_our_caddy
   rm -rf "$CONF_DIR" "$DATA_DIR" "$APP_DIR"
@@ -549,6 +560,7 @@ VM//PANEL - uso: sudo vmpanel <comando>
   2fa-on        ativa 2FA (TOTP) com QR code
   2fa-off       desativa 2FA
   domain <dom>  publica em um dominio com HTTPS ('domain off' para remover)
+  terminal ...  liga/desliga o terminal web (on|off|user <nome>)
   doctor        diagnostico completo
   setup         reexecuta a configuracao inicial
   uninstall     remove o painel
@@ -568,6 +580,15 @@ case "${1:-help}" in
   doctor)    cmd_doctor ;;
   uninstall) cmd_uninstall ;;
   firewall)  need_root firewall; cmd_firewall ;;
+  terminal)
+    need_root terminal
+    case "${2:-}" in
+      on|off) set_env VMPANEL_TERMINAL "$2"; say "Terminal web: $2" ;;
+      user)   id "${3:-}" >/dev/null 2>&1 || die "uso: vmpanel terminal user <usuario existente>"
+              set_env VMPANEL_TERM_USER "$3"; say "Terminal web abre como: $3" ;;
+      *) echo "Terminal web: $(get_env VMPANEL_TERMINAL) (usuario: $(get_env VMPANEL_TERM_USER))"
+         echo "uso: vmpanel terminal on|off | vmpanel terminal user <usuario>" ;;
+    esac ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

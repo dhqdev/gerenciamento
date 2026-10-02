@@ -1,4 +1,4 @@
-/* VM//PANEL - frontend (JS puro, sem dependencias) */
+/* VM//PANEL v2 - frontend (JS puro; xterm.js carregado sob demanda para o terminal) */
 (function () {
   "use strict";
 
@@ -7,7 +7,6 @@
 
   function h(tag, attrs) {
     var el = document.createElement(tag);
-    var kids = Array.prototype.slice.call(arguments, 2);
     if (attrs) {
       Object.keys(attrs).forEach(function (k) {
         var v = attrs[k];
@@ -18,7 +17,7 @@
         else el.setAttribute(k, v === true ? "" : v);
       });
     }
-    add(el, kids);
+    add(el, Array.prototype.slice.call(arguments, 2));
     return el;
   }
   function add(el, kids) {
@@ -39,27 +38,29 @@
   }
   function rate(n) { return bytes(n) + "/s"; }
   function pct(n) { return (Number(n) || 0).toFixed(1) + "%"; }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
   function dur(s) {
     s = Math.floor(s || 0);
     var d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-    return (d ? d + "d " : "") + pad(hh) + "h" + pad(m) + "m";
+    return (d ? d + "d " : "") + hh + "h " + pad(m) + "m";
   }
-  function pad(n) { return (n < 10 ? "0" : "") + n; }
   function when(ts) {
     var d = new Date(ts * 1000);
     return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR");
   }
   function level(p, w, c) { return p >= (c || 90) ? "crit" : p >= (w || 75) ? "warn" : "ok"; }
-  function bar(p, width) {
-    width = width || 24;
+
+  // barra estilo HP: verde, amarela e vermelha conforme o uso
+  function hp(p, opts) {
+    opts = opts || {};
     p = Math.max(0, Math.min(100, Number(p) || 0));
-    var full = Math.round(p / 100 * width);
-    return "[" + "█".repeat(full) + "░".repeat(width - full) + "]";
+    var fill = h("i");
+    fill.style.width = p + "%";
+    return h("div", { class: "hp " + (opts.sm ? "sm " : "") + level(p, opts.w, opts.c), title: pct(p) }, fill);
   }
-  function barLine(label, p, extra, width) {
-    return h("div", { class: "row " + level(p) },
-      h("span", { class: "bar" }, (label ? label + " " : "") + bar(p, width)),
-      h("span", null, pct(p) + (extra ? "  " + extra : "")));
+  function stat(label, p, valText, opts) {
+    return h("div", { class: "stat" }, h("span", { class: "label" }, label), hp(p, opts),
+      h("span", { class: "val " + level(p, (opts || {}).w, (opts || {}).c) }, valText === undefined ? pct(p) : valText));
   }
   function box(title, cls) {
     var b = h("section", { class: "box " + (cls || "") }, h("h2", null, title));
@@ -68,7 +69,7 @@
   }
   function kv(pairs) {
     var d = h("div", { class: "kv" });
-    pairs.forEach(function (p) { add(d, [h("span", null, p[0]), h("span", null, p[1] === undefined || p[1] === null ? "-" : p[1])]); });
+    pairs.forEach(function (p) { add(d, [h("span", null, p[0]), h("span", null, p[1] === undefined || p[1] === null || p[1] === "" ? "-" : p[1])]); });
     return d;
   }
   function table(cols, rows, opts) {
@@ -78,10 +79,16 @@
       if (c.sort && opts.onSort) th.addEventListener("click", function () { opts.onSort(c.sort); });
       return th;
     }));
-    var body = rows.length ? rows : [h("tr", null, h("td", { colspan: cols.length, class: "dim" }, opts.empty || "(vazio)"))];
+    var body = rows.length ? rows : [h("tr", null, h("td", { colspan: cols.length, class: "muted" }, opts.empty || "Nada por aqui."))];
     return h("div", { class: "tbl-wrap" }, h("table", null, h("thead", null, thead), h("tbody", null, body)));
   }
-  function td(v, cls) { return h("td", { class: cls || null }, v); }
+  function td(v, cls, title) { return h("td", { class: cls || null, title: title || null }, v); }
+
+  function toast(msg, err) {
+    var t = h("div", { class: "toast" + (err ? " err" : "") }, msg);
+    $("toasts").appendChild(t);
+    setTimeout(function () { t.remove(); }, err ? 7000 : 3500);
+  }
 
   function api(path) {
     return fetch(path, { credentials: "same-origin" }).then(function (r) {
@@ -95,17 +102,18 @@
       headers: { "Content-Type": "application/json", "X-VMPanel": "1" },
       body: JSON.stringify(body || {})
     }).then(function (r) {
-      if (r.status === 401) { location.href = "/login"; throw new Error("401"); }
+      if (r.status === 401 && path !== "/api/term/unlock") { location.href = "/login"; throw new Error("401"); }
       return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || (d.errors || []).join("; ") || r.status); return d; });
     });
   }
 
   // ------------------------------------------------------------------ preferencias
-  var prefs = { theme: "green", crt: true, boot: true };
+  var THEMES = [["16bit", "16-BIT (padrao)"], ["nes", "NES"], ["arcade", "ARCADE NEON"], ["gameboy", "GAME BOY"]];
+  var prefs = { theme: "16bit", crt: false };
   try {
-    prefs.theme = localStorage.getItem("vmp_theme") || "green";
-    prefs.crt = localStorage.getItem("vmp_crt") !== "0";
-    prefs.boot = localStorage.getItem("vmp_bootanim") !== "0";
+    var t = localStorage.getItem("vmp_theme2");
+    if (THEMES.some(function (x) { return x[0] === t; })) prefs.theme = t;
+    prefs.crt = localStorage.getItem("vmp_crt2") === "1";
   } catch (_) {}
   function savePref(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
   function applyPrefs() {
@@ -115,86 +123,71 @@
   applyPrefs();
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-  // ------------------------------------------------------------------ graficos (canvas)
+  // ------------------------------------------------------------------ graficos pixelados
   function drawChart(canvas, series, opts) {
+    if (!canvas) return;
     opts = opts || {};
-    var dpr = window.devicePixelRatio || 1;
     var w = canvas.clientWidth, hgt = canvas.clientHeight;
     if (!w || !hgt) return;
-    canvas.width = w * dpr; canvas.height = hgt * dpr;
+    var scale = 2;   // desenha em baixa resolucao e amplia = visual pixelado
+    var W = Math.floor(w / scale), H = Math.floor(hgt / scale);
+    canvas.width = W; canvas.height = H;
     var c = canvas.getContext("2d");
-    c.scale(dpr, dpr);
-    c.clearRect(0, 0, w, hgt);
-    var fg = css("--fg"), faint = css("--fg-faint"), dim = css("--fg-dim");
+    c.imageSmoothingEnabled = false;
+    c.fillStyle = css("--ink"); c.fillRect(0, 0, W, H);
     var max = opts.max || 0;
     series.forEach(function (s) { s.data.forEach(function (v) { if (v > max) max = v; }); });
     if (!max) max = 1;
-    var left = opts.axis ? 64 : 0;
-    var pw = w - left, ph = hgt - (opts.axis ? 16 : 2);
-    c.strokeStyle = faint; c.setLineDash([2, 4]); c.lineWidth = 1;
-    c.font = "14px " + css("--font-small");
-    c.fillStyle = dim;
-    for (var i = 0; i <= 4; i++) {
-      var y = Math.round(1 + ph - ph * i / 4) + .5;
-      c.beginPath(); c.moveTo(left, y); c.lineTo(w, y); c.stroke();
-      if (opts.axis) c.fillText((opts.fmt || String)(max * i / 4), 2, Math.max(12, y + 4));
-    }
-    c.setLineDash([]);
-    if (opts.labels && opts.labels.length) {
-      var n = opts.labels.length, step = Math.max(1, Math.floor(n / 6));
-      for (var j = 0; j < n; j += step) c.fillText(opts.labels[j], left + pw * j / Math.max(1, n - 1) - 10, hgt - 2);
-    }
+    c.fillStyle = css("--panel-2");
+    for (var i = 1; i < 4; i++) for (var x = 0; x < W; x += 4) c.fillRect(x, Math.round(H * i / 4), 2, 1);
     series.forEach(function (s, idx) {
       var d = s.data;
       if (!d.length) return;
-      c.strokeStyle = s.color || (idx === 0 ? fg : dim);
-      c.lineWidth = 1.6;
-      c.shadowColor = c.strokeStyle; c.shadowBlur = 6;
-      if (s.dash) c.setLineDash([4, 3]); else c.setLineDash([]);
-      c.beginPath();
-      d.forEach(function (v, k) {
-        var x = left + (d.length === 1 ? pw : pw * k / (d.length - 1));
-        var yy = 1 + ph - ph * Math.min(v, max) / max;
-        if (k) c.lineTo(x, yy); else c.moveTo(x, yy);
-      });
-      c.stroke();
-      if (s.fill) {
-        c.lineTo(left + pw, 1 + ph); c.lineTo(left, 1 + ph); c.closePath();
-        c.globalAlpha = .12; c.fillStyle = c.strokeStyle; c.fill(); c.globalAlpha = 1;
+      var color = s.color || (idx === 0 ? css("--ok-2") : css("--accent-2"));
+      c.fillStyle = color;
+      var n = d.length;
+      for (var px = 0; px < W; px++) {
+        var k = n === 1 ? 0 : Math.round(px / (W - 1) * (n - 1));
+        var y = Math.round((H - 2) - (H - 4) * Math.min(d[k], max) / max);
+        if (s.fill) { c.globalAlpha = .28; c.fillRect(px, y, 1, H - y); c.globalAlpha = 1; }
+        c.fillRect(px, y, 1, s.dash && px % 4 > 1 ? 0 : 2);
       }
-      c.shadowBlur = 0;
     });
+    if (opts.axis) {
+      c.fillStyle = css("--muted");
+      c.font = "8px monospace";
+      c.fillText((opts.fmt || String)(max), 2, 9);
+      if (opts.labels && opts.labels.length) {
+        c.fillText(opts.labels[0], 2, H - 3);
+        var last = opts.labels[opts.labels.length - 1];
+        c.fillText(last, W - c.measureText(last).width - 2, H - 3);
+      }
+    }
   }
 
-  // historico ao vivo (ultimos ~5 min, coletados no navegador)
   var live = { cpu: [], mem: [], rx: [], tx: [], rd: [], wr: [] };
   function pushLive(k, v) { live[k].push(v); if (live[k].length > 150) live[k].shift(); }
 
-  // ------------------------------------------------------------------ console de comandos
-  var out = $("out");
-  function print(text, cls) {
-    out.appendChild(h("div", { class: cls || null }, text));
-    out.scrollTop = out.scrollHeight;
-  }
-
-  // ------------------------------------------------------------------ views
-  var state = { me: null, overview: null, procSort: "cpu", procQuery: "", dockerQuery: "", histRange: "24h" };
+  // ------------------------------------------------------------------ navegacao
+  var state = { me: null, procSort: "cpu", procQuery: "", dockerQuery: "", histRange: "24h", version: null };
 
   var TABS = [
-    { id: "dash", key: "1", name: "PAINEL", every: 2000 },
+    { id: "dash", key: "1", name: "STATUS", every: 3000 },
     { id: "docker", key: "2", name: "DOCKER", every: 5000 },
     { id: "procs", key: "3", name: "PROCESSOS", every: 3000 },
-    { id: "net", key: "4", name: "REDE", every: 3000 },
+    { id: "net", key: "4", name: "REDE", every: 4000 },
     { id: "disks", key: "5", name: "DISCOS", every: 5000 },
     { id: "system", key: "6", name: "SISTEMA", every: 15000 },
     { id: "security", key: "7", name: "SEGURANCA", every: 30000 },
     { id: "history", key: "8", name: "HISTORICO", every: 60000 },
-    { id: "config", key: "9", name: "CONFIG", every: 0 }
+    { id: "term", key: "9", name: "TERMINAL", every: 0 },
+    { id: "config", key: "0", name: "CONFIG", every: 0 }
   ];
   var current = null, timer = null, body = null;
 
   function show(id) {
     var tab = TABS.filter(function (t) { return t.id === id; })[0] || TABS[0];
+    if (current && current.id === "term" && tab.id !== "term") closeTerminal();
     current = tab;
     try { history.replaceState(null, "", "#" + tab.id); } catch (_) {}
     Array.prototype.forEach.call($("tabs").children, function (b) { b.classList.toggle("on", b.dataset.id === tab.id); });
@@ -209,7 +202,9 @@
   function refresh() {
     var tab = current;
     clearTimeout(timer);
-    Promise.resolve(VIEWS[tab.id].load()).then(function (d) {
+    var btn = $("btn-refresh");
+    btn.disabled = true;
+    return Promise.resolve(VIEWS[tab.id].load()).then(function (d) {
       if (tab !== current) return;
       var node = VIEWS[tab.id].render(d);
       clear(body).appendChild(node);
@@ -218,218 +213,257 @@
       if (tab !== current) return;
       clear(body).appendChild(box("ERRO", "", h("p", { class: "crit" }, String(e.message || e))));
     }).then(function () {
+      btn.disabled = false;
       if (tab === current && tab.every && !document.hidden) timer = setTimeout(refresh, tab.every);
     });
   }
-  document.addEventListener("visibilitychange", function () { if (!document.hidden && current) refresh(); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && current && current.every) refresh(); });
 
-  function containerActions(c) {
-    var running = c.state === "running";
-    return h("span", null,
-      running ? null : h("button", { class: "btn small", title: "iniciar", onclick: function () { dockerAct(c.name, "start"); } }, "▶"),
-      running ? h("button", { class: "btn small", title: "reiniciar", onclick: function () { dockerAct(c.name, "restart"); } }, "↻") : null,
-      running ? h("button", { class: "btn small danger", title: "parar", onclick: function () { dockerAct(c.name, "stop"); } }, "■") : null,
-      " ",
-      h("button", { class: "btn small", title: "logs", onclick: function () { openLogs(c.name); } }, "LOG"),
-      h("button", { class: "btn small", title: "detalhes", onclick: function () { openInspect(c.name); } }, "INFO"));
-  }
-  function dockerAct(name, act) {
-    if ((act === "stop" || act === "restart") && !confirm(act.toUpperCase() + " " + name + "?")) return;
-    print("> docker " + act + " " + name + " ...", "dim");
+  // ------------------------------------------------------------------ docker: acoes e janelas
+  function dockerAct(name, act, label) {
+    if ((act === "stop" || act === "restart") && !confirm((act === "stop" ? "Parar " : "Reiniciar ") + (label || name) + "?")) return;
+    toast("Enviando " + act + " para " + (label || name) + "...");
     return post("/api/docker/action", { id: name, action: act }).then(function () {
-      print("OK: " + name + " " + act);
+      toast("OK: " + (label || name) + " (" + act + ")");
       if (current) refresh();
-    }).catch(function (e) { print("ERRO: " + e.message, "crit"); });
+    }).catch(function (e) { toast("Erro: " + e.message, true); });
   }
-  function stateBadge(s) {
-    return h("span", { class: "badge " + (s === "running" ? "run" : s === "exited" || s === "dead" ? "stop" : "other") }, s);
+  function serviceRestart(s) {
+    if (!confirm("Reiniciar o servico " + s.name + "?\nAs tarefas sao recriadas (igual a docker service update --force).")) return;
+    toast("Reiniciando " + s.name + "...");
+    post("/api/swarm/action", { id: s.name, action: "restart" }).then(function () {
+      toast("Servico " + s.name + " reiniciando");
+      setTimeout(refresh, 1500);
+    }).catch(function (e) { toast("Erro: " + e.message, true); });
   }
 
-  // ---------- modal
   var modalTimer = null;
   function openModal(title, tools, content) {
     $("modal-title").textContent = title;
-    add(clear($("modal-tools")), [tools, h("button", { class: "btn", onclick: closeModal }, "[ FECHAR ESC ]")]);
+    add(clear($("modal-tools")), [tools, h("button", { class: "btn", onclick: closeModal }, "FECHAR [ESC]")]);
     add(clear($("modal-body")), [content]);
     $("modal").classList.remove("hidden");
   }
   function closeModal() { clearInterval(modalTimer); $("modal").classList.add("hidden"); }
   $("modal").addEventListener("click", function (e) { if (e.target.id === "modal") closeModal(); });
 
-  function openLogs(name) {
+  function openLogs(name, label, service) {
     var pre = h("pre", { class: "logs" }, "carregando...");
     var tail = h("select", null, [100, 200, 500, 1000, 2000].map(function (n) { return h("option", { value: n, selected: n === 200 }, n + " linhas"); }));
     var follow = h("input", { type: "checkbox", checked: true });
-    var filter = h("input", { placeholder: "filtrar (grep)" });
+    var filter = h("input", { placeholder: "filtrar texto..." });
     var lastText = "";
     function paint() {
       var q = filter.value.toLowerCase();
       var txt = q ? lastText.split("\n").filter(function (l) { return l.toLowerCase().indexOf(q) >= 0; }).join("\n") : lastText;
-      var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+      var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
       pre.textContent = txt || "(sem logs)";
       if (atBottom) pre.scrollTop = pre.scrollHeight;
     }
     function load() {
-      api("/api/docker/logs?id=" + encodeURIComponent(name) + "&tail=" + tail.value).then(function (d) {
-        lastText = d.logs; paint();
-      }).catch(function (e) { pre.textContent = "ERRO: " + e.message; });
+      var url = (service ? "/api/swarm/logs?id=" : "/api/docker/logs?id=") + encodeURIComponent(name) + "&tail=" + tail.value;
+      api(url).then(function (d) { lastText = d.logs; paint(); })
+        .catch(function (e) { pre.textContent = "Erro: " + e.message; });
     }
     tail.addEventListener("change", load);
     filter.addEventListener("input", paint);
-    openModal("LOGS: " + name, [tail, h("label", { class: "chk" }, follow, "seguir (3s)"), filter], pre);
+    openModal("LOGS: " + (label || name), [tail, h("label", { class: "chk" }, follow, "ao vivo"), filter], pre);
     load();
-    setTimeout(function () { pre.scrollTop = pre.scrollHeight; }, 300);
+    setTimeout(function () { pre.scrollTop = pre.scrollHeight; }, 400);
     clearInterval(modalTimer);
     modalTimer = setInterval(function () { if (follow.checked) load(); }, 3000);
   }
-  function openInspect(name) {
+  function openInspect(name, label) {
     api("/api/docker/inspect?id=" + encodeURIComponent(name)).then(function (d) {
-      openModal("CONTAINER: " + d.name, null, h("div", null,
-        kv([["ID", d.id], ["Imagem", d.image], ["Status", d.status], ["Health", d.health || "-"],
+      openModal("CONTAINER: " + (label || d.name), null, h("div", { class: "stack" },
+        kv([["ID", d.id], ["Nome", d.name], ["Imagem", d.image], ["Status", d.status], ["Health", d.health],
             ["Criado", d.created], ["Iniciado", d.started], ["Restarts", d.restart_count],
-            ["Politica restart", d.restart_policy || "-"], ["Redes", d.networks.join(", ")], ["Comando", d.cmd]]),
-        h("h3", null, "VOLUMES / MOUNTS"),
-        table([{ t: "ORIGEM" }, { t: "DESTINO" }, { t: "RW" }], d.mounts.map(function (m) {
-          return h("tr", null, td(m.src, "cmd"), td(m.dst), td(m.rw ? "rw" : "ro"));
+            ["Politica de restart", d.restart_policy], ["Redes", d.networks.join(", ")], ["Comando", d.cmd]]),
+        h("p", { class: "label" }, "Volumes e pastas montadas"),
+        table([{ t: "ORIGEM" }, { t: "DESTINO" }, { t: "MODO" }], d.mounts.map(function (m) {
+          return h("tr", null, td(m.src, "cmd"), td(m.dst), td(m.rw ? "leitura/escrita" : "so leitura"));
         }))));
-    }).catch(function (e) { print("ERRO: " + e.message, "crit"); });
+    }).catch(function (e) { toast("Erro: " + e.message, true); });
   }
   function openImages() {
     api("/api/docker/images").then(function (imgs) {
       var total = imgs.reduce(function (a, i) { return a + i.size; }, 0);
-      openModal("IMAGENS DOCKER (" + imgs.length + " / " + bytes(total) + ")", null,
-        table([{ t: "ID" }, { t: "TAGS" }, { t: "TAMANHO", num: 1 }, { t: "CRIADA" }], imgs.map(function (i) {
-          return h("tr", null, td(i.id), td(i.tags.join(", "), "cmd"), td(bytes(i.size), "num"), td(when(i.created)));
+      openModal("IMAGENS (" + imgs.length + " / " + bytes(total) + ")", null,
+        table([{ t: "TAG" }, { t: "ID" }, { t: "TAMANHO", num: 1 }, { t: "CRIADA" }], imgs.map(function (i) {
+          return h("tr", null, td(i.tags.join(", "), "cmd"), td(i.id, "muted"), td(bytes(i.size), "num"), td(when(i.created)));
         })));
-    }).catch(function (e) { print("ERRO: " + e.message, "crit"); });
+    }).catch(function (e) { toast("Erro: " + e.message, true); });
+  }
+  function openDockerDisk() {
+    api("/api/docker/df").then(function (d) {
+      openModal("ESPACO USADO PELO DOCKER", null, kv([["Imagens", bytes(d.images)], ["  sem uso (recuperavel)", bytes(d.images_reclaimable)],
+        ["Camadas dos containers", bytes(d.containers)], ["Volumes", bytes(d.volumes) + " em " + d.volumes_count + " volumes"], ["Cache de build", bytes(d.build_cache)]]));
+    }).catch(function (e) { toast("Erro: " + e.message, true); });
   }
 
   var VIEWS = {};
 
-  // ---------- PAINEL
+  // ---------- STATUS
   VIEWS.dash = {
     load: function () { return api("/api/overview"); },
     render: function (d) {
-      state.overview = d;
       var n = d.now || {};
-      if (!n.cpu) return box("AGUARDANDO", "", h("p", null, "Coletando a primeira amostra..."));
-      var s = d.static, m = n.memory;
+      if (!n.cpu) return box("AGUARDE", "", h("p", null, "Coletando a primeira leitura..."));
+      var s = d.static, m = n.memory, dk = d.docker || {};
       pushLive("cpu", n.cpu.percent); pushLive("mem", m.percent);
       pushLive("rx", n.net.rx_rate); pushLive("tx", n.net.tx_rate);
       pushLive("rd", n.io.read_rate); pushLive("wr", n.io.write_rate);
       updateHeader(d);
-
-      var cores = h("div", { class: "cores" }, n.cpu.cores.map(function (p, i) {
-        return h("div", { class: level(p) }, "#" + pad(i) + " " + bar(p, 8) + " " + Math.round(p) + "%");
-      }));
       var alerts = (d.alerts || []).slice();
-      if (d.reboot_required) alerts.push("Reinicio pendente (atualizacoes do kernel)");
+      if (d.reboot_required) alerts.push("Reinicio pendente (atualizacao do kernel)");
       var o = d.oracle || {};
-      var dk = d.docker || {};
 
       return h("div", { class: "grid" },
         box("CPU", "",
           h("div", { class: "row" }, h("span", { class: "big " + level(n.cpu.percent) }, pct(n.cpu.percent)),
-            h("span", { class: "dim" }, "LOAD " + n.load.map(function (x) { return x.toFixed(2); }).join(" "), h("br"),
-              s.cpu_count + " NUCLEOS", n.cpu.steal > 0.5 ? h("span", { class: "warn" }, " STEAL " + pct(n.cpu.steal)) : null)),
-          h("div", { class: "bar " + level(n.cpu.percent) }, bar(n.cpu.percent, 34)),
-          h("canvas", { class: "spark", id: "sp-cpu" }), cores),
+            h("span", { class: "muted" }, s.cpu_count + " nucleos")),
+          h("canvas", { class: "spark", id: "sp-cpu" }),
+          h("hr", { class: "sep" }),
+          h("div", { class: "cores" }, n.cpu.cores.map(function (p, i) { return stat("#" + i, p, Math.round(p) + "%", { sm: 1 }); })),
+          h("hr", { class: "sep" }),
+          kv([["Carga (1/5/15 min)", n.load.map(function (x) { return x.toFixed(2); }).join("  /  ")],
+              ["Steal (CPU roubada)", h("span", { class: n.cpu.steal > 5 ? "warn" : "" }, pct(n.cpu.steal))]])),
         box("MEMORIA", "",
           h("div", { class: "row" }, h("span", { class: "big " + level(m.percent) }, pct(m.percent)),
-            h("span", { class: "dim" }, bytes(m.used) + " / " + bytes(m.total), h("br"), "LIVRE " + bytes(m.available))),
-          h("div", { class: "bar " + level(m.percent) }, bar(m.percent, 34)),
+            h("span", { class: "muted" }, bytes(m.used) + " de " + bytes(m.total))),
           h("canvas", { class: "spark", id: "sp-mem" }),
-          kv([["CACHE", bytes(m.cached)], ["BUFFERS", bytes(m.buffers)],
-              ["SWAP", m.swap_total ? bytes(m.swap_used) + " / " + bytes(m.swap_total) + " (" + pct(m.swap_percent) + ")" : "desativado"]])),
-        box("DISCOS", "", n.disks.map(function (x) {
-          return h("div", null, h("div", { class: "row" }, h("span", null, x.mount), h("span", { class: "dim" }, bytes(x.used) + " / " + bytes(x.total))),
-            barLine("", x.percent, null, 28));
-        }), h("div", { class: "row dim mt" }, h("span", null, "IO ↓ " + rate(n.io.read_rate)), h("span", null, "↑ " + rate(n.io.write_rate)))),
+          h("hr", { class: "sep" }),
+          stat("RAM", m.percent),
+          m.swap_total ? stat("SWAP", m.swap_percent) : null,
+          h("hr", { class: "sep" }),
+          kv([["Livre de verdade", bytes(m.available)], ["Cache", bytes(m.cached)],
+              ["Swap", m.swap_total ? bytes(m.swap_used) + " de " + bytes(m.swap_total) : "desativado"]])),
+        box("DISCOS", "", h("div", { class: "stack" }, n.disks.map(function (x) {
+          return h("div", null,
+            h("div", { class: "row" }, h("b", null, x.mount), h("span", { class: "muted" }, bytes(x.free) + " livres de " + bytes(x.total))),
+            stat("USO", x.percent, undefined, { w: 80, c: 90 }));
+        })), h("hr", { class: "sep" }),
+          kv([["Leitura", rate(n.io.read_rate)], ["Escrita", rate(n.io.write_rate)]])),
         box("REDE", "",
-          h("div", { class: "row" }, h("span", { class: "big" }, "↓" + rate(n.net.rx_rate)), h("span", { class: "big dim" }, "↑" + rate(n.net.tx_rate))),
+          h("div", { class: "row" }, h("span", null, h("span", { class: "label" }, "DOWNLOAD"), h("div", { class: "mid ok" }, "↓ " + rate(n.net.rx_rate))),
+            h("span", null, h("span", { class: "label" }, "UPLOAD"), h("div", { class: "mid", text: "↑ " + rate(n.net.tx_rate) }))),
           h("canvas", { class: "spark", id: "sp-net" }),
-          n.net.ifaces.map(function (i) {
-            return h("div", { class: "row dim" }, h("span", null, i.name), h("span", null, "RX " + bytes(i.rx_total) + "  TX " + bytes(i.tx_total)));
-          })),
+          h("p", { class: "muted" }, "verde = download, azul = upload"),
+          table([{ t: "INTERFACE" }, { t: "RECEBIDO", num: 1 }, { t: "ENVIADO", num: 1 }], n.net.ifaces.filter(function (i) { return i.rx_total + i.tx_total > 0; }).map(function (i) {
+            return h("tr", null, td(i.name), td(bytes(i.rx_total), "num"), td(bytes(i.tx_total), "num"));
+          }))),
         box("DOCKER", "", dk.available ? [
-          h("div", { class: "row" }, h("span", { class: "big" }, (dk.info.running || 0) + "/" + (dk.info.containers || 0)),
-            h("span", { class: "dim" }, "RODANDO", h("br"), dk.info.images + " IMAGENS · v" + dk.info.version)),
-          dk.info.stopped ? h("div", { class: "warn" }, dk.info.stopped + " container(s) parado(s)") : null,
-          table([{ t: "TOP CPU" }, { t: "CPU", num: 1 }, { t: "MEM", num: 1 }], dk.top.map(function (c) {
-            return h("tr", null, td(c.name), td(pct(c.cpu), "num"), td(bytes(c.mem_used), "num"));
-          }))
-        ] : h("p", { class: "dim" }, "Docker nao disponivel neste host.")),
+          h("div", { class: "row" }, h("span", { class: "big " + (dk.info.stopped ? "warn" : "ok") }, dk.info.running + "/" + dk.info.containers),
+            h("span", { class: "muted" }, "containers rodando")),
+          dk.info.stopped ? h("p", { class: "warn" }, dk.info.stopped + " container(s) parado(s)") : null,
+          h("p", { class: "label" }, "Quem mais usa CPU agora"),
+          table([{ t: "SERVICO" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }], dk.top.map(function (c) {
+            return h("tr", null, td(c.label || c.name, "name", c.name), td(pct(c.cpu), "num " + level(c.cpu, 50, 90)), td(bytes(c.mem_used), "num"));
+          })),
+          h("p", null, h("button", { class: "btn small", onclick: function () { show("docker"); } }, "VER TODOS ▶"))
+        ] : h("p", { class: "muted" }, "Docker nao disponivel neste host.")),
         box("SISTEMA", "",
-          kv([["HOST", s.hostname], ["OS", s.os], ["KERNEL", s.kernel], ["ARQ", s.arch], ["CPU", s.cpu_model],
-              ["PROCESSOS", n.procs.total + " (" + n.procs.running + " exec" + (n.procs.zombie ? ", " + n.procs.zombie + " zumbi" : "") + ")"],
-              ["TEMP", n.temps.length ? n.temps.map(function (t) { return t.c + "°C"; }).join(" ") : "n/d"]])),
-        box("ALERTAS", "", alerts.length ? alerts.map(function (a) { return h("div", { class: "warn" }, "! " + a); })
-          : h("div", null, "TUDO NOMINAL. NENHUM ALERTA ATIVO.")),
-        box("ORACLE ALWAYS FREE", "",
-          h("p", { class: "dim mb" }, "A Oracle pode recuperar instancias ociosas (CPU p95 < 20% em 7 dias)."),
-          o.cpu_p95 === null || o.cpu_p95 === undefined ? h("div", { class: "dim" }, "Coletando dados... (" + (o.days || 0) + " dias)") :
-            kv([["CPU p95 7d", h("span", { class: o.cpu_p95 < 20 ? "warn" : "ok" }, pct(o.cpu_p95))],
-                ["MEM p95 7d", o.mem_p95 === null ? "-" : pct(o.mem_p95)], ["DADOS", o.days + " dias"],
-                ["STATUS", o.at_risk ? h("span", { class: "warn" }, "RISCO DE RECUPERACAO") : "OK"]])));
+          kv([["Maquina", s.hostname], ["Sistema", s.os], ["Kernel", s.kernel], ["Arquitetura", s.arch], ["Processador", s.cpu_model],
+              ["Processos", n.procs.total + " (" + n.procs.running + " rodando" + (n.procs.zombie ? ", " + n.procs.zombie + " zumbi" : "") + ")"],
+              ["Ligada ha", dur(n.uptime)],
+              ["Temperatura", n.temps.length ? n.temps.map(function (t) { return t.c + "°C"; }).join(" ") : "n/d"]])),
+        box("ALERTAS", "", alerts.length ? h("div", { class: "stack" }, alerts.map(function (a) { return h("div", { class: "warn" }, "⚠ " + a); }))
+          : h("div", { class: "row" }, h("span", { class: "mid ok" }, "ALL CLEAR!"), h("span", { class: "muted" }, "Nenhum alerta ativo"))),
+        box("ORACLE FREE TIER", "",
+          h("p", { class: "muted" }, "A Oracle pode recuperar VMs gratuitas ociosas (CPU p95 abaixo de 20% em 7 dias)."),
+          o.cpu_p95 === null || o.cpu_p95 === undefined ? h("p", null, "Coletando dados (" + (o.days || 0) + " dias)...") :
+            h("div", { class: "stack" }, stat("CPU95", o.cpu_p95, pct(o.cpu_p95)), stat("RAM95", o.mem_p95 || 0, pct(o.mem_p95)),
+              kv([["Dados coletados", o.days + " dias"], ["Situacao", o.at_risk ? h("span", { class: "warn" }, "RISCO DE RECUPERACAO") : h("span", { class: "ok" }, "SEGURA")]]))));
     },
     after: function () {
       drawChart($("sp-cpu"), [{ data: live.cpu, fill: true }], { max: 100 });
-      drawChart($("sp-mem"), [{ data: live.mem, fill: true }], { max: 100 });
-      drawChart($("sp-net"), [{ data: live.rx, fill: true }, { data: live.tx, dash: true }]);
+      drawChart($("sp-mem"), [{ data: live.mem, fill: true, color: css("--magic") }], { max: 100 });
+      drawChart($("sp-net"), [{ data: live.rx, fill: true }, { data: live.tx }]);
     }
   };
 
   function updateHeader(d) {
     var s = d.static;
-    clear($("hostline"));
-    add($("hostline"), [h("b", null, s.hostname), " · " + s.os + " · " + s.arch + " · " + s.cpu_count + " vCPU · ",
-      bytes(d.now.memory.total) + " RAM · USER ", h("b", null, (state.me && state.me.user) || "?"), " · v" + d.version]);
-    $("uptime").textContent = "UPTIME " + dur(d.now.uptime);
-    $("ps1").textContent = ((state.me && state.me.user) || "user") + "@" + s.hostname + ":~$";
+    $("subtitle").textContent = "HOST " + s.hostname.toUpperCase() + " · v" + d.version;
+    var chips = clear($("chips"));
+    [["SO", s.os], ["CPU", s.cpu_count + " vCPU " + s.arch], ["RAM", bytes(d.now.memory.total)],
+     ["PLAYER", (state.me && state.me.user) || "?"]].forEach(function (c) {
+      chips.appendChild(h("span", { class: "chip" }, h("b", null, c[0] + " "), c[1]));
+    });
+    $("uptime").textContent = "ligada ha " + dur(d.now.uptime);
   }
 
   // ---------- DOCKER
   VIEWS.docker = {
     setup: function () {
-      var q = h("input", { placeholder: "filtrar containers", value: state.dockerQuery });
+      var q = h("input", { placeholder: "buscar servico, container ou imagem", value: state.dockerQuery, size: 34 });
       q.addEventListener("input", function () { state.dockerQuery = q.value; refresh(); });
       return h("div", { class: "toolbar" }, q,
-        h("button", { class: "btn", onclick: openImages }, "[ IMAGENS ]"),
-        h("button", { class: "btn", onclick: function () {
-          api("/api/docker/df").then(function (d) {
-            openModal("USO DE DISCO DO DOCKER", null, kv([["Imagens", bytes(d.images)], ["  recuperavel", bytes(d.images_reclaimable)],
-              ["Containers (rw)", bytes(d.containers)], ["Volumes", bytes(d.volumes) + " (" + d.volumes_count + ")"], ["Build cache", bytes(d.build_cache)]]));
-          }).catch(function (e) { print("ERRO: " + e.message, "crit"); });
-        } }, "[ DISCO ]"));
+        h("button", { class: "btn", onclick: openImages }, "IMAGENS"),
+        h("button", { class: "btn", onclick: openDockerDisk }, "ESPACO EM DISCO"));
     },
-    load: function () { return api("/api/docker"); },
-    render: function (d) {
+    load: function () {
+      return Promise.all([api("/api/docker"), api("/api/swarm").catch(function () { return { active: false }; })]);
+    },
+    render: function (r) {
+      var d = r[0], sw = r[1];
       if (!d.available) return box("DOCKER", "", h("p", { class: "warn" }, d.error || "Docker indisponivel"),
-        h("p", { class: "dim" }, "Instale o Docker e rode 'vmpanel doctor' para dar acesso ao painel."));
+        h("p", { class: "muted" }, "Se acabou de instalar o Docker, rode na VM: sudo vmpanel restart"));
       var q = state.dockerQuery.toLowerCase();
-      var list = d.containers.filter(function (c) { return !q || (c.name + c.image + c.project).toLowerCase().indexOf(q) >= 0; });
+      function match(txt) { return !q || txt.toLowerCase().indexOf(q) >= 0; }
+      var out = h("div", { class: "stack" });
+
+      if (sw.active) {
+        var services = sw.services.filter(function (s) { return match(s.name + s.image + s.stack + s.domains.join(" ")); });
+        out.appendChild(box("DOCKER SWARM · " + sw.stacks.length + " STACKS · " + sw.services.length + " SERVICOS", "",
+          h("div", { class: "stacks" }, sw.stacks.map(function (st) {
+            var okAll = st.healthy === st.services;
+            return h("div", { class: "stack-card" }, h("span", { class: "px" }, st.name),
+              h("span", { class: "tag " + (okAll ? "run" : "stop") }, st.healthy + "/" + st.services + " OK"));
+          })),
+          table([{ t: "STACK" }, { t: "SERVICO" }, { t: "REPLICAS" }, { t: "IMAGEM" }, { t: "DOMINIO" }, { t: "ACOES" }],
+            services.map(function (s) {
+              var good = s.desired === null ? s.running > 0 : s.running >= s.desired;
+              return h("tr", null, td(s.stack || "-", "muted"), td(s.name, "name", s.name),
+                td(h("span", { class: "tag " + (good ? "run" : "stop"), title: s.error || "" }, s.running + "/" + (s.desired === null ? "global" : s.desired))),
+                td(s.image, "cmd", s.image),
+                td(s.domains.length ? s.domains.map(function (x) { return h("div", null, h("a", { href: "https://" + x, target: "_blank", rel: "noopener" }, x)); }) : "-"),
+                td([h("button", { class: "btn small", onclick: function () { openLogs(s.name, s.name, true); } }, "LOGS"), " ",
+                    h("button", { class: "btn small", onclick: function () { serviceRestart(s); } }, "↻ REINICIAR")], "actions"));
+            }), { empty: "nenhum servico encontrado" })));
+      }
+
+      var list = d.containers.filter(function (c) { return match(c.name + c.label + c.image + c.project); });
       var i = d.info;
-      return h("div", null,
-        h("p", { class: "dim" }, "Docker v" + i.version + " · " + i.running + " rodando · " + i.stopped + " parados · " +
-          i.images + " imagens · driver " + i.driver),
-        table([{ t: "ESTADO" }, { t: "NOME" }, { t: "PROJETO" }, { t: "IMAGEM" }, { t: "CPU", num: 1 }, { t: "MEMORIA", num: 1 },
-               { t: "REDE RX/TX", num: 1 }, { t: "PORTAS" }, { t: "STATUS" }, { t: "ACOES" }],
+      out.appendChild(box("CONTAINERS · " + i.running + " RODANDO · " + i.stopped + " PARADOS", "",
+        table([{ t: "ESTADO" }, { t: "NOME" }, { t: "CPU", num: 1 }, { t: "RAM", num: 1 }, { t: "REDE ↓/↑", num: 1 }, { t: "STATUS" }, { t: "ACOES" }],
           list.map(function (c) {
-            return h("tr", null, td(stateBadge(c.state)), td(c.name), td(c.project || "-", "dim"), td(c.image, "cmd"),
-              td(c.state === "running" ? pct(c.cpu) : "-", "num " + level(c.cpu)),
-              td(c.state === "running" ? bytes(c.mem_used) + (c.mem_limit ? " (" + pct(c.mem_percent) + ")" : "") : "-", "num"),
-              td(c.state === "running" ? bytes(c.net_rx) + " / " + bytes(c.net_tx) : "-", "num"),
-              td(c.ports.join(" ") || "-", "cmd"), td(c.status, "dim"), td(containerActions(c)));
-          }), { empty: "nenhum container" }));
+            var on = c.state === "running";
+            return h("tr", null,
+              td(h("span", { class: "tag " + (on ? "run" : c.state === "exited" || c.state === "dead" ? "stop" : "other") }, c.state)),
+              td([h("div", { class: "name" }, c.label), h("div", { class: "muted cmd", title: c.image }, c.image)], null, c.name),
+              td(on ? pct(c.cpu) : "-", "num " + (on ? level(c.cpu, 50, 90) : "")),
+              td(on ? bytes(c.mem_used) : "-", "num"),
+              td(on ? bytes(c.net_rx) + " / " + bytes(c.net_tx) : "-", "num"),
+              td(c.status, "muted"),
+              td([
+                on ? null : h("button", { class: "btn small", title: "iniciar", onclick: function () { dockerAct(c.name, "start", c.label); } }, "▶ INICIAR"),
+                on ? h("button", { class: "btn small", title: "reiniciar", onclick: function () { dockerAct(c.name, "restart", c.label); } }, "↻") : null,
+                on ? h("button", { class: "btn small danger", title: "parar", onclick: function () { dockerAct(c.name, "stop", c.label); } }, "■") : null,
+                " ",
+                h("button", { class: "btn small", onclick: function () { openLogs(c.name, c.label); } }, "LOGS"),
+                h("button", { class: "btn small", onclick: function () { openInspect(c.name, c.label); } }, "INFO")], "actions"));
+          }), { empty: "nenhum container" })));
+      return out;
     }
   };
 
   // ---------- PROCESSOS
   VIEWS.procs = {
     setup: function () {
-      var q = h("input", { placeholder: "buscar (nome, pid, usuario)", value: state.procQuery });
+      var q = h("input", { placeholder: "buscar por nome, PID ou usuario", value: state.procQuery, size: 32 });
       q.addEventListener("input", function () { state.procQuery = q.value; refresh(); });
-      var s = h("select", null, [["cpu", "ordenar: CPU"], ["mem", "ordenar: MEMORIA"], ["pid", "ordenar: PID"]].map(function (o) {
+      var s = h("select", null, [["cpu", "Ordenar por CPU"], ["mem", "Ordenar por memoria"], ["pid", "Ordenar por PID"]].map(function (o) {
         return h("option", { value: o[0], selected: o[0] === state.procSort }, o[1]);
       }));
       s.addEventListener("change", function () { state.procSort = s.value; refresh(); });
@@ -437,12 +471,12 @@
     },
     load: function () { return api("/api/processes?sort=" + state.procSort + "&q=" + encodeURIComponent(state.procQuery)); },
     render: function (list) {
-      return table([{ t: "PID", num: 1, sort: "pid" }, { t: "USUARIO" }, { t: "CPU%", num: 1, sort: "cpu" }, { t: "MEM%", num: 1, sort: "mem" },
-                    { t: "RSS", num: 1 }, { t: "THR", num: 1 }, { t: "S" }, { t: "COMANDO" }],
+      return box("PROCESSOS", "", table([{ t: "PID", num: 1, sort: "pid" }, { t: "USUARIO" }, { t: "CPU", num: 1, sort: "cpu" }, { t: "MEM", num: 1, sort: "mem" },
+                    { t: "RAM", num: 1 }, { t: "THREADS", num: 1 }, { t: "COMANDO" }],
         list.map(function (p) {
-          return h("tr", null, td(p.pid, "num"), td(p.user), td(p.cpu.toFixed(1), "num " + level(p.cpu, 50, 90)), td(p.mem.toFixed(1), "num " + level(p.mem, 30, 60)),
-            td(bytes(p.rss), "num"), td(p.threads, "num"), td(p.state), td(p.cmd, "cmd"));
-        }), { onSort: function (k) { state.procSort = k; show("procs"); } });
+          return h("tr", null, td(p.pid, "num"), td(p.user), td(p.cpu.toFixed(1) + "%", "num " + level(p.cpu, 50, 90)), td(p.mem.toFixed(1) + "%", "num " + level(p.mem, 30, 60)),
+            td(bytes(p.rss), "num"), td(p.threads, "num"), td(p.cmd, "cmd", p.cmd));
+        }), { onSort: function (k) { state.procSort = k; show("procs"); } }));
     }
   };
 
@@ -452,21 +486,20 @@
     render: function (d) {
       var st = d.conns.states;
       return h("div", { class: "grid wide" },
-        box("INTERFACES", "span2", table([{ t: "IFACE" }, { t: "↓ RX/s", num: 1 }, { t: "↑ TX/s", num: 1 }, { t: "RX TOTAL", num: 1 }, { t: "TX TOTAL", num: 1 }, { t: "ERROS", num: 1 }],
-          d.ifaces.map(function (i) {
-            return h("tr", null, td(i.name), td(rate(i.rx_rate), "num"), td(rate(i.tx_rate), "num"), td(bytes(i.rx_total), "num"), td(bytes(i.tx_total), "num"), td(i.errors, "num"));
+        box("INTERFACES", "span2", table([{ t: "INTERFACE" }, { t: "↓ AGORA", num: 1 }, { t: "↑ AGORA", num: 1 }, { t: "RECEBIDO", num: 1 }, { t: "ENVIADO", num: 1 }, { t: "ERROS", num: 1 }],
+          d.ifaces.filter(function (i) { return i.rx_total + i.tx_total > 0; }).map(function (i) {
+            return h("tr", null, td(i.name, "name"), td(rate(i.rx_rate), "num"), td(rate(i.tx_rate), "num"), td(bytes(i.rx_total), "num"), td(bytes(i.tx_total), "num"), td(i.errors, "num " + (i.errors ? "warn" : "")));
           }))),
-        box("ENDERECOS IP", "", table([{ t: "IFACE" }, { t: "TIPO" }, { t: "ENDERECO" }], d.ips.map(function (a) {
-          return h("tr", null, td(a.iface), td(a.family), td(a.addr));
-        }))),
-        box("CONEXOES TCP", "", kv(Object.keys(st).sort().map(function (k) { return [k, st[k]]; })),
-          h("h3", null, "TOP IPS CONECTADOS"),
-          table([{ t: "IP" }, { t: "CONEXOES", num: 1 }], d.conns.top_peers.map(function (p) { return h("tr", null, td(p.ip), td(p.count, "num")); }))),
-        box("PORTAS ABERTAS (LISTEN)", "span2", table([{ t: "PROTO" }, { t: "ENDERECO" }, { t: "PORTA", num: 1 }, { t: "EXPOSTA?" }],
+        box("PORTAS ABERTAS", "", table([{ t: "PORTA", num: 1 }, { t: "PROTO" }, { t: "ENDERECO" }, { t: "ACESSO" }],
           d.ports.map(function (p) {
             var pub = !/^(127\.|::1|localhost|\[?::1)/.test(p.addr) && !/%lo$/.test(p.addr);
-            return h("tr", null, td(p.proto), td(p.addr), td(p.port, "num"), td(pub ? "PUBLICA" : "local", pub ? "warn" : "dim"));
-          }))));
+            return h("tr", null, td(p.port, "num"), td(p.proto), td(p.addr), td(h("span", { class: "tag " + (pub ? "other" : "info") }, pub ? "INTERNET" : "LOCAL")));
+          }))),
+        box("CONEXOES", "", kv(Object.keys(st).sort().map(function (k) { return [k, st[k]]; })),
+          h("hr", { class: "sep" }), h("p", { class: "label" }, "IPs com mais conexoes"),
+          table([{ t: "IP" }, { t: "CONEXOES", num: 1 }], d.conns.top_peers.map(function (p) { return h("tr", null, td(p.ip), td(p.count, "num")); })),
+          h("hr", { class: "sep" }), h("p", { class: "label" }, "Enderecos desta VM"),
+          table([{ t: "INTERFACE" }, { t: "ENDERECO" }], d.ips.map(function (a) { return h("tr", null, td(a.iface), td(a.addr)); }))));
     }
   };
 
@@ -475,22 +508,21 @@
     load: function () { return api("/api/overview"); },
     render: function (d) {
       var n = d.now;
+      pushLive("rd", n.io.read_rate); pushLive("wr", n.io.write_rate);
       return h("div", { class: "grid wide" },
-        box("SISTEMAS DE ARQUIVOS", "span2", table([{ t: "MONTAGEM" }, { t: "DISPOSITIVO" }, { t: "TIPO" }, { t: "USO" }, { t: "USADO", num: 1 }, { t: "LIVRE", num: 1 }, { t: "TOTAL", num: 1 }, { t: "INODES", num: 1 }],
-          n.disks.map(function (x) {
-            return h("tr", null, td(x.mount), td(x.device, "dim"), td(x.fs, "dim"), td(bar(x.percent, 20) + " " + pct(x.percent), "bar " + level(x.percent, 75, 90)),
-              td(bytes(x.used), "num"), td(bytes(x.free), "num"), td(bytes(x.total), "num"), td(pct(x.inodes_percent), "num " + level(x.inodes_percent)));
-          }))),
-        box("ATIVIDADE DE DISCO", "span2", h("canvas", { class: "chart", id: "ch-io" }),
-          h("p", { class: "dim" }, "linha cheia = leitura · tracejada = escrita (ultimos minutos)"),
-          table([{ t: "DISCO" }, { t: "LEITURA/s", num: 1 }, { t: "ESCRITA/s", num: 1 }, { t: "OCUPADO", num: 1 }], n.io.devices.map(function (x) {
+        box("PARTICOES", "span2", h("div", { class: "stack" }, n.disks.map(function (x) {
+          return h("div", null, h("div", { class: "row" }, h("span", { class: "mid" }, x.mount), h("span", { class: "muted" }, x.device + " · " + x.fs)),
+            stat("USO", x.percent, pct(x.percent), { w: 80, c: 90 }),
+            h("div", { class: "row muted" }, h("span", null, bytes(x.used) + " usados · " + bytes(x.free) + " livres · " + bytes(x.total) + " total"),
+              h("span", { class: level(x.inodes_percent) }, "inodes " + pct(x.inodes_percent))));
+        }))),
+        box("LEITURA E ESCRITA", "span2", h("canvas", { class: "chart", id: "ch-io" }),
+          h("p", { class: "muted" }, "verde = leitura · azul = escrita (ultimos minutos)"),
+          table([{ t: "DISCO" }, { t: "LEITURA", num: 1 }, { t: "ESCRITA", num: 1 }, { t: "OCUPADO", num: 1 }], n.io.devices.map(function (x) {
             return h("tr", null, td(x.name), td(rate(x.read_rate), "num"), td(rate(x.write_rate), "num"), td(pct(x.busy), "num " + level(x.busy)));
           }))));
     },
-    after: function (d) {
-      pushLive("rd", d.now.io.read_rate); pushLive("wr", d.now.io.write_rate);
-      drawChart($("ch-io"), [{ data: live.rd, fill: true }, { data: live.wr, dash: true }], { axis: true, fmt: rate });
-    }
+    after: function () { drawChart($("ch-io"), [{ data: live.rd, fill: true }, { data: live.wr }], { axis: true, fmt: rate }); }
   };
 
   // ---------- SISTEMA
@@ -500,22 +532,24 @@
       var s = d.static, u = d.updates;
       return h("div", { class: "grid wide" },
         box("MAQUINA", "", kv([["Hostname", s.hostname], ["Sistema", s.os], ["Kernel", s.kernel], ["Arquitetura", s.arch],
-          ["CPU", s.cpu_model], ["vCPUs", s.cpu_count], ["Python", s.python],
+          ["Processador", s.cpu_model], ["vCPUs", s.cpu_count], ["Python", s.python],
           ["Temperaturas", d.temps.length ? d.temps.map(function (t) { return t.name + " " + t.c + "°C"; }).join(", ") : "n/d"]])),
-        box("ATUALIZACOES", "",
-          u.manager ? h("div", null,
-            h("div", { class: "big " + (u.count ? "warn" : "") }, u.count + " pacote(s)"),
-            u.security ? h("div", { class: "crit" }, u.security + " de seguranca") : null,
-            d.reboot_required ? h("div", { class: "warn" }, "! REINICIO NECESSARIO") : null,
-            h("p", { class: "dim mono" }, (u.packages || []).join(" ") || "sistema em dia"),
-            h("p", { class: "dim" }, "Para atualizar: sudo " + (u.manager === "apt" ? "apt update && sudo apt upgrade" : "dnf upgrade")))
-            : h("p", { class: "dim" }, "Gerenciador de pacotes nao detectado.")),
-        box("SERVICOS", "", table([{ t: "SERVICO" }, { t: "ESTADO" }, { t: "DESDE" }], d.services.map(function (x) {
-          return h("tr", null, td(x.name), td(x.active + "/" + x.sub, x.active === "active" ? "" : x.active === "failed" ? "crit" : "warn"), td(x.since, "dim"));
+        box("ATUALIZACOES DO SISTEMA", "",
+          u.manager ? h("div", { class: "stack" },
+            h("div", { class: "big " + (u.count ? "warn" : "ok") }, u.count ? u.count + " PACOTES" : "EM DIA!"),
+            u.security ? h("p", { class: "crit" }, u.security + " atualizacoes de seguranca") : null,
+            d.reboot_required ? h("p", { class: "warn" }, "⚠ A VM precisa reiniciar para concluir atualizacoes") : null,
+            u.count ? h("p", { class: "muted cmd" }, (u.packages || []).join(", ")) : null,
+            u.count ? h("p", null, "Para instalar, abra o ", h("a", { href: "#term", onclick: function (e) { e.preventDefault(); show("term"); } }, "TERMINAL"),
+              " e rode: ", h("code", null, "sudo " + (u.manager === "apt" ? "apt update && sudo apt upgrade" : "dnf upgrade"))) : null)
+            : h("p", { class: "muted" }, "Gerenciador de pacotes nao detectado.")),
+        box("SERVICOS IMPORTANTES", "", table([{ t: "SERVICO" }, { t: "ESTADO" }, { t: "DESDE" }], d.services.map(function (x) {
+          var on = x.active === "active";
+          return h("tr", null, td(x.name, "name"), td(h("span", { class: "tag " + (on ? "run" : x.active === "failed" ? "stop" : "other") }, x.active)), td(x.since, "muted"));
         }))),
-        box("UNIDADES COM FALHA", "", d.failed.length ? table([{ t: "UNIDADE" }, { t: "DESCRICAO" }], d.failed.map(function (f) {
+        box("FALHAS NO SYSTEMD", "", d.failed.length ? table([{ t: "UNIDADE" }, { t: "DESCRICAO" }], d.failed.map(function (f) {
           return h("tr", null, td(f.unit, "crit"), td(f.desc));
-        })) : h("p", null, "Nenhuma unidade systemd com falha.")));
+        })) : h("p", { class: "ok" }, "Nenhuma unidade com falha.")));
     }
   };
 
@@ -524,27 +558,27 @@
     load: function () { return Promise.all([api("/api/security"), api("/api/me")]); },
     render: function (r) {
       var d = r[0], me = r[1], ssh = d.ssh;
-      var kinds = { login_ok: "LOGIN OK", login_fail: "LOGIN FALHOU", ip_locked: "IP BLOQUEADO", alert: "ALERTA", settings: "CONFIG", start: "INICIO", sessions_revoked: "SESSOES ENCERRADAS" };
+      var kinds = { login_ok: "LOGIN OK", login_fail: "LOGIN FALHOU", ip_locked: "IP BLOQUEADO", alert: "ALERTA", settings: "CONFIG",
+        start: "PAINEL INICIOU", sessions_revoked: "SESSOES ENCERRADAS", terminal: "TERMINAL ABERTO", term_unlock: "TERMINAL LIBERADO",
+        term_unlock_fail: "SENHA ERRADA (TERMINAL)", panel_update: "ATUALIZACAO DO PAINEL" };
       return h("div", { class: "grid wide" },
-        box("PAINEL", "", kv([["Usuario", me.user], ["2FA (TOTP)", me.totp ? "ATIVO" : h("span", { class: "warn" }, "DESATIVADO - rode 'sudo vmpanel 2fa-on'")],
-            ["Seu IP", me.ip], ["Sessoes ativas", d.sessions.length]]),
-          table([{ t: "IP" }, { t: "INICIO" }, { t: "NAVEGADOR" }], d.sessions.map(function (s) {
-            return h("tr", null, td(s.ip), td(when(s.created)), td(s.ua, "cmd"));
+        box("SEU ACESSO", "", kv([["Usuario", me.user], ["2FA", me.totp ? h("span", { class: "ok" }, "ATIVO") : h("span", { class: "warn" }, "DESATIVADO (sudo vmpanel 2fa-on)")],
+            ["Seu IP", me.ip], ["Sessoes abertas", d.sessions.length]]),
+          h("hr", { class: "sep" }),
+          table([{ t: "IP" }, { t: "ENTROU EM" }, { t: "NAVEGADOR" }], d.sessions.map(function (s) {
+            return h("tr", null, td(s.ip), td(when(s.created)), td(s.ua, "cmd", s.ua));
           })),
           h("p", null, h("button", { class: "btn danger", onclick: function () {
             if (confirm("Encerrar TODAS as sessoes (inclusive esta)?")) post("/api/sessions/revoke").then(function () { location.href = "/login"; });
-          } }, "[ ENCERRAR TODAS AS SESSOES ]"))),
-        box("SSH - ULTIMAS 24H", "", !ssh.available ? h("p", { class: "dim" }, "Sem acesso ao journal do SSH.") : h("div", null,
-          h("div", { class: "big " + (ssh.failed_24h > 100 ? "warn" : "") }, ssh.failed_24h + " falhas"),
-          ssh.failed_24h > 50 ? h("p", { class: "dim" }, "Dica: use so chave SSH (PasswordAuthentication no) e instale o fail2ban.") : null,
+          } }, "ENCERRAR TODAS AS SESSOES"))),
+        box("ATAQUES SSH (24H)", "", !ssh.available ? h("p", { class: "muted" }, "Sem acesso ao log do SSH.") : h("div", { class: "stack" },
+          h("div", { class: "big " + (ssh.failed_24h > 100 ? "warn" : "ok") }, ssh.failed_24h + " FALHAS"),
+          ssh.failed_24h > 50 ? h("p", { class: "muted" }, "Dica: use so chave SSH (PasswordAuthentication no) e instale o fail2ban.") : null,
           table([{ t: "IP ATACANTE" }, { t: "TENTATIVAS", num: 1 }], ssh.top_ips.map(function (x) { return h("tr", null, td(x.ip), td(x.count, "num")); })),
-          h("h3", null, "USUARIOS TENTADOS"),
-          h("p", { class: "mono dim" }, ssh.top_users.map(function (x) { return x.user + "(" + x.count + ")"; }).join(" ") || "-"),
-          h("h3", null, "LOGINS ACEITOS"),
-          h("pre", { class: "logs" }, ssh.accepted.join("\n") || "-"))),
-        box("USUARIOS LOGADOS NA VM", "", h("pre", { class: "logs" }, d.who.join("\n") || "ninguem via terminal")),
-        box("AUDITORIA DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO" }, { t: "IP" }, { t: "DETALHE" }], d.events.map(function (e) {
-          return h("tr", null, td(when(e.ts)), td(kinds[e.kind] || e.kind.toUpperCase(), /fail|lock|alert/.test(e.kind) ? "warn" : ""), td(e.ip || "-"), td(e.detail, "cmd"));
+          h("p", { class: "label" }, "Usuarios que tentaram"),
+          h("p", { class: "muted" }, ssh.top_users.map(function (x) { return x.user + " (" + x.count + ")"; }).join(", ") || "-"))),
+        box("REGISTRO DO PAINEL", "span2", table([{ t: "QUANDO" }, { t: "EVENTO" }, { t: "IP" }, { t: "DETALHE" }], d.events.map(function (e) {
+          return h("tr", null, td(when(e.ts)), td(kinds[e.kind] || e.kind.toUpperCase(), /fail|lock|alert/.test(e.kind) ? "warn" : ""), td(e.ip || "-"), td(e.detail, "cmd", e.detail));
         }))));
     }
   };
@@ -553,20 +587,19 @@
   VIEWS.history = {
     setup: function () {
       return h("div", { class: "toolbar" }, ["1h", "6h", "24h", "7d", "30d"].map(function (r) {
-        return h("button", { class: "btn" + (r === state.histRange ? " on" : ""), onclick: function () { state.histRange = r; show("history"); } },
-          (r === state.histRange ? "> " : "") + r.toUpperCase());
+        return h("button", { class: "btn" + (r === state.histRange ? " gold" : ""), onclick: function () { state.histRange = r; show("history"); } }, r.toUpperCase());
       }));
     },
     load: function () { return api("/api/history?range=" + state.histRange); },
     render: function (rows) {
-      if (!rows.length) return box("HISTORICO", "", h("p", null, "Sem dados ainda. O painel grava uma amostra por minuto; volte em alguns minutos."));
+      if (!rows.length) return box("HISTORICO", "", h("p", null, "Ainda sem dados. O painel grava um ponto por minuto; volte daqui a pouco."));
       function avg(k) { return rows.reduce(function (a, r) { return a + (r[k] || 0); }, 0) / rows.length; }
       function mx(k) { return rows.reduce(function (a, r) { return Math.max(a, r[k] || 0); }, 0); }
       return h("div", { class: "grid wide" },
-        box("CPU %", "", h("canvas", { class: "chart", id: "h-cpu" }), h("p", { class: "dim" }, "media " + pct(avg("cpu")) + " · pico " + pct(mx("cpu_max")) + " · tracejado = pico")),
-        box("MEMORIA %", "", h("canvas", { class: "chart", id: "h-mem" }), h("p", { class: "dim" }, "media " + pct(avg("mem")) + " · max " + pct(mx("mem")) + " · tracejado = swap")),
-        box("REDE", "", h("canvas", { class: "chart", id: "h-net" }), h("p", { class: "dim" }, "↓ media " + rate(avg("rx")) + " · ↑ media " + rate(avg("tx")))),
-        box("DISCO / (%) E LOAD", "", h("canvas", { class: "chart", id: "h-disk" }), h("p", { class: "dim" }, "disco atual " + pct(rows[rows.length - 1].disk) + " · load max " + mx("load1").toFixed(2) + " (tracejado)")));
+        box("CPU", "", h("canvas", { class: "chart", id: "h-cpu" }), h("p", { class: "muted" }, "media " + pct(avg("cpu")) + " · pico " + pct(mx("cpu_max")))),
+        box("MEMORIA", "", h("canvas", { class: "chart", id: "h-mem" }), h("p", { class: "muted" }, "media " + pct(avg("mem")) + " · max " + pct(mx("mem")) + " · azul = swap")),
+        box("REDE", "", h("canvas", { class: "chart", id: "h-net" }), h("p", { class: "muted" }, "verde = download (media " + rate(avg("rx")) + ") · azul = upload (media " + rate(avg("tx")) + ")")),
+        box("DISCO / E CARGA", "", h("canvas", { class: "chart", id: "h-disk" }), h("p", { class: "muted" }, "verde = disco (agora " + pct(rows[rows.length - 1].disk) + ") · azul = carga (max " + mx("load1").toFixed(2) + ")")));
     },
     after: function (rows) {
       if (!rows.length) return;
@@ -575,12 +608,90 @@
         return state.histRange === "7d" || state.histRange === "30d" ? pad(d.getDate()) + "/" + pad(d.getMonth() + 1) : pad(d.getHours()) + ":" + pad(d.getMinutes());
       });
       function col(k) { return rows.map(function (r) { return r[k] || 0; }); }
-      drawChart($("h-cpu"), [{ data: col("cpu"), fill: true }, { data: col("cpu_max"), dash: true }], { max: 100, axis: true, labels: lbl, fmt: function (v) { return Math.round(v) + "%"; } });
-      drawChart($("h-mem"), [{ data: col("mem"), fill: true }, { data: col("swap"), dash: true }], { max: 100, axis: true, labels: lbl, fmt: function (v) { return Math.round(v) + "%"; } });
-      drawChart($("h-net"), [{ data: col("rx"), fill: true }, { data: col("tx"), dash: true }], { axis: true, labels: lbl, fmt: rate });
+      function p100(v) { return Math.round(v) + "%"; }
+      drawChart($("h-cpu"), [{ data: col("cpu"), fill: true }, { data: col("cpu_max"), color: css("--warn") }], { max: 100, axis: true, labels: lbl, fmt: p100 });
+      drawChart($("h-mem"), [{ data: col("mem"), fill: true, color: css("--magic") }, { data: col("swap") }], { max: 100, axis: true, labels: lbl, fmt: p100 });
+      drawChart($("h-net"), [{ data: col("rx"), fill: true }, { data: col("tx") }], { axis: true, labels: lbl, fmt: rate });
       var maxLoad = Math.max.apply(null, col("load1").concat([1]));
-      drawChart($("h-disk"), [{ data: col("disk"), fill: true }, { data: col("load1").map(function (v) { return v / maxLoad * 100; }), dash: true }],
-        { max: 100, axis: true, labels: lbl, fmt: function (v) { return Math.round(v) + "%"; } });
+      drawChart($("h-disk"), [{ data: col("disk"), fill: true }, { data: col("load1").map(function (v) { return v / maxLoad * 100; }) }], { max: 100, axis: true, labels: lbl, fmt: p100 });
+    }
+  };
+
+  // ---------- TERMINAL
+  var term = null, termWs = null, termFit = null, termResize = null;
+  function loadXterm() {
+    if (window.Terminal && window.FitAddon) return Promise.resolve();
+    function js(src) {
+      return new Promise(function (ok, bad) { var s = h("script", { src: src }); s.onload = ok; s.onerror = bad; document.head.appendChild(s); });
+    }
+    document.head.appendChild(h("link", { rel: "stylesheet", href: "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" }));
+    return js("https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js")
+      .then(function () { return js("https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"); });
+  }
+  function closeTerminal() {
+    if (termWs) { try { termWs.close(); } catch (_) {} termWs = null; }
+    if (term) { term.dispose(); term = null; }
+    if (termResize) { window.removeEventListener("resize", termResize); termResize = null; }
+  }
+  function startTerminal(holder, status) {
+    loadXterm().then(function () {
+      closeTerminal();
+      term = new window.Terminal({
+        cursorBlink: true, fontSize: 14, scrollback: 5000,
+        fontFamily: "'Cascadia Mono', 'DejaVu Sans Mono', Menlo, monospace",
+        theme: { background: "#0d0e17", foreground: "#f4f4f4", cursor: "#ffcd75", selectionBackground: "#3b5dc9",
+                 black: "#1a1c2c", red: "#b13e53", green: "#38b764", yellow: "#ffcd75", blue: "#3b5dc9", magenta: "#5d275d",
+                 cyan: "#41a6f6", white: "#f4f4f4", brightBlack: "#566c86", brightRed: "#ef7d57", brightGreen: "#a7f070",
+                 brightYellow: "#ffcd75", brightBlue: "#41a6f6", brightMagenta: "#b13e53", brightCyan: "#73eff7", brightWhite: "#ffffff" }
+      });
+      termFit = new window.FitAddon.FitAddon();
+      term.loadAddon(termFit);
+      term.open(holder);
+      termFit.fit();
+      var proto = location.protocol === "https:" ? "wss://" : "ws://";
+      termWs = new WebSocket(proto + location.host + "/api/term?cols=" + term.cols + "&rows=" + term.rows);
+      termWs.binaryType = "arraybuffer";
+      termWs.onopen = function () { status.textContent = "CONECTADO"; status.className = "tag run"; term.focus(); };
+      termWs.onmessage = function (e) { term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data)); };
+      termWs.onclose = function () {
+        status.textContent = "DESCONECTADO"; status.className = "tag stop";
+        if (term) term.write("\r\n\x1b[33m[sessao encerrada - clique em RECONECTAR]\x1b[0m\r\n");
+      };
+      term.onData(function (data) { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "input", data: data })); });
+      termResize = function () {
+        if (!term) return;
+        termFit.fit();
+        if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      };
+      window.addEventListener("resize", termResize);
+    }).catch(function () { toast("Nao consegui carregar o terminal (cdn.jsdelivr.net bloqueado?)", true); });
+  }
+  VIEWS.term = {
+    load: function () { return api("/api/me"); },
+    render: function (me) {
+      if (!me.agent) return box("TERMINAL", "", h("p", { class: "warn" }, "O agente do painel nao esta rodando."),
+        h("p", null, "Rode na VM: ", h("code", null, "curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/update.sh | sudo bash")));
+      if (!me.term_unlocked) {
+        var pw = h("input", { type: "password", placeholder: "sua senha do painel", autocomplete: "current-password", size: 30 });
+        var msg = h("p", { role: "status" });
+        var f = h("form", { class: "toolbar" }, pw, h("button", { class: "btn gold", type: "submit" }, "▶ ABRIR TERMINAL"));
+        f.addEventListener("submit", function (e) {
+          e.preventDefault();
+          post("/api/term/unlock", { password: pw.value }).then(function () { show("term"); })
+            .catch(function (er) { msg.textContent = er.message; msg.className = "crit"; pw.value = ""; });
+        });
+        setTimeout(function () { pw.focus(); }, 50);
+        return box("TERMINAL BLOQUEADO", "", h("p", null, "O terminal da acesso total a VM. Confirme sua senha para liberar por 30 minutos."), f, msg);
+      }
+      var status = h("span", { class: "tag other" }, "CONECTANDO");
+      var holder = h("div", { class: "term-wrap" });
+      var wrap = h("div", { class: "stack" },
+        h("div", { class: "toolbar" }, status,
+          h("button", { class: "btn", onclick: function () { startTerminal(holder, status); } }, "↻ RECONECTAR"),
+          h("span", { class: "muted" }, "Dica: copie com Ctrl+Shift+C e cole com Ctrl+Shift+V. Tudo que acontece aqui fica no registro do painel.")),
+        holder);
+      setTimeout(function () { startTerminal(holder, status); }, 30);
+      return wrap;
     }
   };
 
@@ -592,175 +703,134 @@
       function chk(k, label) { return h("label", { class: "chk" }, h("input", { name: k, type: "checkbox", checked: !!s[k] }), label); }
       function txt(k, label, ph) { return h("label", { class: "f" }, h("span", null, label), h("input", { name: k, value: s[k] || "", placeholder: ph || "", autocomplete: "off" })); }
       var msg = h("p", { role: "status" });
+      var themeSel = h("select", null, THEMES.map(function (t) { return h("option", { value: t[0], selected: t[0] === prefs.theme }, t[1]); }));
+      themeSel.addEventListener("change", function () { prefs.theme = themeSel.value; savePref("vmp_theme2", prefs.theme); applyPrefs(); });
       var form = h("form", null,
         h("div", { class: "grid wide" },
-          box("LIMITES DE ALERTA", "",
-            num("alert_cpu", "CPU acima de (%)"), num("alert_mem", "Memoria acima de (%)"), num("alert_disk", "Disco acima de (%)"),
-            num("alert_minutes", "Por quantos minutos seguidos (CPU/MEM)"), num("alert_cooldown_min", "Intervalo minimo entre alertas iguais (min)"),
+          box("ALERTAS", "",
+            num("alert_cpu", "Avisar quando a CPU passar de (%)"), num("alert_mem", "Avisar quando a memoria passar de (%)"), num("alert_disk", "Avisar quando o disco passar de (%)"),
+            num("alert_minutes", "Por quantos minutos seguidos (CPU/memoria)"), num("alert_cooldown_min", "Esperar quantos minutos antes de repetir o mesmo alerta"),
             chk("alert_container_down", "Avisar quando um container parar"), chk("alert_login", "Avisar a cada login no painel"),
-            chk("oracle_idle_watch", "Vigiar regra de instancia ociosa da Oracle")),
+            chk("oracle_idle_watch", "Vigiar a regra de VM ociosa da Oracle")),
           box("NOTIFICACOES", "",
             txt("discord_webhook", "Webhook do Discord", "https://discord.com/api/webhooks/..."),
             txt("telegram_token", "Token do bot do Telegram", "123456:ABC..."),
             txt("telegram_chat_id", "Chat ID do Telegram", "123456789"),
-            h("p", { class: "dim" }, "Os segredos aparecem como ******** depois de salvos."),
+            h("p", { class: "muted" }, "Depois de salvos, os segredos aparecem como ********."),
             h("button", { class: "btn", type: "button", onclick: function () {
-              msg.textContent = "Enviando teste..."; msg.className = "";
-              post("/api/settings/test").then(function () { msg.textContent = "Teste enviado!"; })
-                .catch(function (e) { msg.textContent = "Falhou: " + e.message; msg.className = "crit"; });
-            } }, "[ ENVIAR TESTE ]")),
-          box("APARENCIA (neste navegador)", "",
-            h("label", { class: "f" }, h("span", null, "Tema de fosforo"), themeSelect()),
-            h("label", { class: "chk" }, h("input", { type: "checkbox", checked: prefs.crt, onchange: function (e) { prefs.crt = e.target.checked; savePref("vmp_crt", prefs.crt ? "1" : "0"); applyPrefs(); } }), "Efeito CRT (scanlines)"),
-            h("label", { class: "chk" }, h("input", { type: "checkbox", checked: prefs.boot, onchange: function (e) { prefs.boot = e.target.checked; savePref("vmp_bootanim", prefs.boot ? "1" : "0"); } }), "Animacao de boot no login")),
-          box("LINHA DE COMANDO NA VM", "", h("pre", { class: "logs" },
-            "sudo vmpanel status      # estado do servico\n" +
-            "sudo vmpanel logs        # logs ao vivo\n" +
-            "sudo vmpanel update      # atualiza do GitHub\n" +
-            "sudo vmpanel passwd      # troca usuario/senha\n" +
-            "sudo vmpanel 2fa-on      # ativa 2FA\n" +
-            "sudo vmpanel domain X    # troca o dominio\n" +
-            "sudo vmpanel doctor      # diagnostico\n" +
-            "sudo vmpanel uninstall   # remove o painel"))),
-        h("p", null, h("button", { class: "btn", type: "submit" }, "[ SALVAR CONFIGURACOES ]")), msg);
+              post("/api/settings/test").then(function () { toast("Mensagem de teste enviada!"); })
+                .catch(function (e) { toast("Falhou: " + e.message, true); });
+            } }, "ENVIAR TESTE")),
+          box("VISUAL (NESTE NAVEGADOR)", "",
+            h("label", { class: "f" }, h("span", null, "Tema"), themeSel),
+            h("label", { class: "chk" }, h("input", { type: "checkbox", checked: prefs.crt, onchange: function (e) { prefs.crt = e.target.checked; savePref("vmp_crt2", prefs.crt ? "1" : "0"); applyPrefs(); } }), "Efeito de TV antiga (scanlines)")),
+          box("COMANDOS NA VM", "", h("pre", { class: "logs" },
+            "# atualizar o painel\ncurl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/update.sh | sudo bash\n\n" +
+            "# remover o painel\ncurl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/uninstall.sh | sudo bash\n\n" +
+            "sudo vmpanel passwd        # trocar usuario/senha\n" +
+            "sudo vmpanel 2fa-on        # ativar 2FA\n" +
+            "sudo vmpanel terminal off  # desligar o terminal web\n" +
+            "sudo vmpanel doctor        # diagnostico"))),
+        h("p", null, h("button", { class: "btn gold", type: "submit" }, "✔ SALVAR")), msg);
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         var data = {};
-        Array.prototype.forEach.call(form.querySelectorAll("input[name]"), function (i) {
-          data[i.name] = i.type === "checkbox" ? i.checked : i.value;
-        });
-        post("/api/settings", data).then(function () { msg.textContent = "SALVO."; msg.className = ""; })
-          .catch(function (er) { msg.textContent = "ERRO: " + er.message; msg.className = "crit"; });
+        Array.prototype.forEach.call(form.querySelectorAll("input[name]"), function (i) { data[i.name] = i.type === "checkbox" ? i.checked : i.value; });
+        post("/api/settings", data).then(function () { toast("Configuracoes salvas!"); })
+          .catch(function (er) { toast("Erro: " + er.message, true); });
       });
       return form;
     }
   };
 
-  var THEMES = ["green", "amber", "cyan", "white", "pink"];
-  function themeSelect() {
-    var s = h("select", null, THEMES.map(function (t) { return h("option", { value: t, selected: t === prefs.theme }, t.toUpperCase()); }));
-    s.addEventListener("change", function () { setTheme(s.value); });
-    return s;
+  // ------------------------------------------------------------------ atualizacao do painel
+  function checkVersion() {
+    return api("/api/version").then(function (v) {
+      state.version = v;
+      var b = $("btn-update");
+      clear(b);
+      add(b, ["★ ATUALIZAR PAINEL", v.ok && v.behind ? h("span", { class: "badge-new" }, "NEW") : null]);
+      return v;
+    }).catch(function () { return null; });
   }
-  function setTheme(t) {
-    if (THEMES.indexOf(t) < 0) return false;
-    prefs.theme = t; savePref("vmp_theme", t); applyPrefs();
-    if (current && VIEWS[current.id].after && state.overview) refresh();
-    return true;
+  function openUpdate() {
+    var body = h("div", { class: "stack" }, h("p", null, "Procurando atualizacoes no GitHub..."));
+    openModal("ATUALIZAR PAINEL", null, body);
+    checkVersion().then(function (v) {
+      clear(body);
+      if (!v || !v.ok) { add(body, [h("p", { class: "crit" }, (v && v.error) || "Nao consegui verificar a versao.")]); return; }
+      if (!v.behind) {
+        add(body, [h("p", { class: "mid ok" }, "VOCE JA ESTA NA ULTIMA VERSAO!"), h("p", { class: "muted" }, "Versao instalada: " + v.local)]);
+        return;
+      }
+      add(body, [
+        h("p", { class: "mid warn" }, v.behind + " NOVIDADE(S) DISPONIVEL(IS)"),
+        h("pre", { class: "logs" }, v.changes.join("\n")),
+        h("p", { class: "muted" }, "O painel reinicia sozinho durante a atualizacao (cerca de 30 segundos). Seus containers nao sao afetados."),
+        h("p", null, h("button", { class: "btn gold", onclick: runUpdate }, "▶ ATUALIZAR AGORA"))
+      ]);
+    });
+  }
+  function runUpdate() {
+    closeModal();
+    var ov = $("overlay"), bar = $("ov-bar"), log = $("ov-log");
+    ov.classList.remove("hidden");
+    var p = 0, before = state.me && state.me.version, started = Date.now();
+    bar.style.width = "0%";
+    var tick = setInterval(function () { p = Math.min(95, p + 2); bar.style.width = p + "%"; }, 700);
+    post("/api/update").catch(function (e) {
+      clearInterval(tick);
+      $("ov-title").textContent = "GAME OVER";
+      $("ov-msg").textContent = "Nao consegui iniciar a atualizacao: " + e.message;
+      setTimeout(function () { ov.classList.add("hidden"); }, 6000);
+    });
+    var poll = setInterval(function () {
+      api("/api/update/log").then(function (d) { if (d.log) log.textContent = d.log.replace(/\x1b\[[0-9;]*m/g, ""); }).catch(function () {});
+      fetch("/api/me", { credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (me) {
+        var elapsed = Date.now() - started;
+        var done = me && elapsed > 8000 && /Atualizado:|nao subiu/.test(log.textContent);
+        if (done || (me && elapsed > 150000)) {
+          clearInterval(poll); clearInterval(tick);
+          bar.style.width = "100%";
+          $("ov-title").textContent = "STAGE CLEAR!";
+          $("ov-msg").textContent = "Painel atualizado" + (me.version !== before ? " para a v" + me.version : "") + ". Recarregando...";
+          setTimeout(function () { location.reload(); }, 1800);
+        }
+      }).catch(function () {});
+    }, 2500);
   }
 
-  // ------------------------------------------------------------------ comandos
-  var COMMANDS = {
-    help: function () {
-      print([
-        "COMANDOS DISPONIVEIS:",
-        "  1-9 | goto <aba>            troca de aba (painel, docker, processos, rede, discos, sistema, seguranca, historico, config)",
-        "  ps [filtro]                 processos (abre a aba com o filtro)",
-        "  start|stop|restart <ct>     controla um container docker",
-        "  logs <ct>                   logs de um container",
-        "  inspect <ct>                detalhes de um container",
-        "  images                      imagens docker",
-        "  free | df | uptime | whoami resumo rapido no console",
-        "  theme <green|amber|cyan|white|pink>",
-        "  crt on|off                  efeito de scanlines",
-        "  clear                       limpa o console",
-        "  logout                      sair",
-        "ATALHOS: teclas 1-9 trocam de aba, '/' foca o console, ESC fecha janelas."
-      ].join("\n"));
-    },
-    clear: function () { clear(out); },
-    goto: function (a) {
-      var t = TABS.filter(function (x) { return x.id === a[0] || x.name.toLowerCase() === (a[0] || "").toLowerCase() || x.key === a[0]; })[0];
-      if (t) show(t.id); else print("aba desconhecida: " + a[0], "warn");
-    },
-    ps: function (a) { state.procQuery = a.join(" "); show("procs"); },
-    start: function (a) { if (!a[0]) return print("uso: start <container>", "warn"); dockerAct(a[0], "start"); },
-    stop: function (a) { if (!a[0]) return print("uso: stop <container>", "warn"); dockerAct(a[0], "stop"); },
-    restart: function (a) { if (!a[0]) return print("uso: restart <container>", "warn"); dockerAct(a[0], "restart"); },
-    logs: function (a) { if (!a[0]) return print("uso: logs <container>", "warn"); openLogs(a[0]); },
-    inspect: function (a) { if (!a[0]) return print("uso: inspect <container>", "warn"); openInspect(a[0]); },
-    images: function () { openImages(); },
-    theme: function (a) { if (!setTheme(a[0])) print("temas: " + THEMES.join(", "), "warn"); },
-    crt: function (a) { prefs.crt = a[0] !== "off"; savePref("vmp_crt", prefs.crt ? "1" : "0"); applyPrefs(); },
-    whoami: function () { print((state.me && state.me.user) + " (ip " + (state.me && state.me.ip) + ")"); },
-    uptime: function () { api("/api/overview").then(function (d) { print("up " + dur(d.now.uptime) + ", load " + d.now.load.join(" ")); }); },
-    free: function () {
-      api("/api/overview").then(function (d) {
-        var m = d.now.memory;
-        print("MEM  total " + bytes(m.total) + "  usado " + bytes(m.used) + "  livre " + bytes(m.available) + "\nSWAP total " + bytes(m.swap_total) + "  usado " + bytes(m.swap_used));
-      });
-    },
-    df: function () {
-      api("/api/overview").then(function (d) {
-        print(d.now.disks.map(function (x) { return (x.mount + "                ").slice(0, 16) + bar(x.percent, 20) + " " + pct(x.percent) + "  " + bytes(x.free) + " livre"; }).join("\n"));
-      });
-    },
-    logout: function () { post("/api/logout").then(function () { location.href = "/login"; }); },
-    sudo: function () { print("nice try. ;)", "warn"); },
-    exit: function () { COMMANDS.logout(); }
-  };
-  var cmdHist = [], cmdPos = 0;
-  $("cmdform").addEventListener("submit", function (e) {
-    e.preventDefault();
-    var input = $("cmd"), line = input.value.trim();
-    input.value = "";
-    if (!line) return;
-    cmdHist.push(line); cmdPos = cmdHist.length;
-    print($("ps1").textContent + " " + line, "dim");
-    var parts = line.split(/\s+/), name = parts.shift().toLowerCase();
-    if (/^[1-9]$/.test(name)) return COMMANDS.goto([name]);
-    var fn = COMMANDS[name];
-    if (fn) fn(parts); else print(name + ": comando nao encontrado. digite 'help'.", "warn");
-  });
-  $("cmd").addEventListener("keydown", function (e) {
-    if (e.key === "ArrowUp" && cmdPos > 0) { cmdPos--; e.target.value = cmdHist[cmdPos]; e.preventDefault(); }
-    else if (e.key === "ArrowDown") { cmdPos = Math.min(cmdHist.length, cmdPos + 1); e.target.value = cmdHist[cmdPos] || ""; e.preventDefault(); }
-  });
+  // ------------------------------------------------------------------ teclado e inicio
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") { closeModal(); return; }
     var tag = (e.target.tagName || "").toLowerCase();
+    if (current && current.id === "term") return;   // no terminal, todas as teclas vao para o shell
     if (tag === "input" || tag === "select" || tag === "textarea" || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (/^[1-9]$/.test(e.key)) { show(TABS[Number(e.key) - 1].id); e.preventDefault(); }
-    else if (e.key === "/") { $("cmd").focus(); e.preventDefault(); }
+    var t = TABS.filter(function (x) { return x.key === e.key; })[0];
+    if (t) { show(t.id); e.preventDefault(); }
+    else if (e.key === "r" || e.key === "R") { refresh(); e.preventDefault(); }
   });
-
-  // ------------------------------------------------------------------ boot
-  function boot() {
-    var el = $("boot");
-    var lines = [
-      "VM//PANEL BIOS v1.0  (C) RETRO SYSTEMS",
-      "CHECKING MEMORY ........ OK",
-      "DETECTING CPU .......... OK",
-      "MOUNTING /proc ......... OK",
-      "LINKING DOCKER SOCKET .. OK",
-      "LOADING PHOSPHOR ....... OK",
-      "",
-      "WELCOME, " + ((state.me && state.me.user) || "OPERATOR").toUpperCase() + "."
-    ];
-    el.classList.remove("hidden");
-    var i = 0;
-    (function step() {
-      if (i >= lines.length) { setTimeout(function () { el.classList.add("hidden"); }, 450); return; }
-      el.textContent += lines[i++] + "\n";
-      setTimeout(step, 110);
-    })();
-  }
 
   function init() {
     add($("tabs"), TABS.map(function (t) {
-      return h("button", { "data-id": t.id, onclick: function () { show(t.id); } }, h("span", { class: "k" }, t.key + ":"), t.name);
+      return h("button", { "data-id": t.id, onclick: function () { show(t.id); } }, h("span", { class: "k" }, t.key), t.name);
     }));
+    $("btn-refresh").addEventListener("click", function () { if (current) { refresh().then(function () { toast("Dados atualizados"); }); } });
+    $("btn-update").addEventListener("click", openUpdate);
+    $("btn-logout").addEventListener("click", function () { post("/api/logout").then(function () { location.href = "/login"; }); });
     api("/api/me").then(function (me) {
       state.me = me;
-      var fresh = false;
-      try { fresh = sessionStorage.getItem("vmp_boot") === "1"; sessionStorage.removeItem("vmp_boot"); } catch (_) {}
-      if (fresh && prefs.boot) boot();
       var start = (location.hash || "").slice(1);
       show(TABS.some(function (t) { return t.id === start; }) ? start : "dash");
-      print("VM//PANEL v" + me.version + " pronto. digite 'help' para ver os comandos.", "dim");
+      setTimeout(checkVersion, 1500);
+      setInterval(checkVersion, 30 * 60 * 1000);
     });
     setInterval(function () { $("clock").textContent = new Date().toLocaleTimeString("pt-BR"); }, 1000);
-    window.addEventListener("resize", function () { if (current && VIEWS[current.id].after) refresh(); });
+    var rt = null;
+    window.addEventListener("resize", function () {
+      clearTimeout(rt);
+      rt = setTimeout(function () { if (current && current.id !== "term" && VIEWS[current.id].after) refresh(); }, 300);
+    });
   }
   init();
 })();

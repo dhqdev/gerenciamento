@@ -1,0 +1,14 @@
+[Unit]
+Description=VM//PANEL agent (terminal web e atualizacao do painel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /opt/vmpanel/app/agent.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

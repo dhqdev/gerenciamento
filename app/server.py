@@ -20,9 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import auth as authmod      # noqa: E402
 import docker_api           # noqa: E402
 import metrics              # noqa: E402
+import webterm              # noqa: E402
 from store import Store, Recorder, notify  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
+TERM_UNLOCK_SECS = 30 * 60   # depois de confirmar a senha, o terminal fica liberado por 30 min
 # um ou mais enderecos separados por virgula (ex.: "127.0.0.1,172.18.0.1" no modo Traefik)
 HOSTS = [h.strip() for h in os.environ.get("VMPANEL_HOST", "127.0.0.1").split(",") if h.strip()]
 # proxies cujo X-Forwarded-For e confiavel (Caddy local ou o Traefik do Docker)
@@ -33,7 +35,8 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COOKIE = "vmp_session"
 MAX_BODY = 64 * 1024
 
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
+       "style-src 'self' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
@@ -121,6 +124,21 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def terminal(self, sess):
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host")
+        if not origin or urllib.parse.urlparse(origin).netloc != host:
+            return self.send(403, {"error": "origem invalida"})
+        if sess.get("term_until", 0) < time.time():
+            return self.send(403, {"error": "confirme a senha para abrir o terminal"})
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+        if not webterm.handshake(self):
+            return self.send(400, {"error": "esperado websocket"})
+        ip = self.client_ip()
+        self.close_connection = True
+        webterm.bridge_terminal(self.connection, int(q.get("cols", 100)), int(q.get("rows", 30)),
+                                lambda user: STORE.event("terminal", ip, "shell como %s" % user))
+
     def static(self, name):
         path = os.path.normpath(os.path.join(STATIC, name))
         if not path.startswith(STATIC + os.sep) or not os.path.isfile(path):
@@ -170,10 +188,22 @@ class Handler(BaseHTTPRequestHandler):
         if not sess:
             return self.send(401, {"error": "nao autenticado"})
 
+        if p == "/api/term":
+            return self.terminal(sess)
+        if p == "/api/version":
+            return self.send(200, webterm.agent_call("version"))
+        if p == "/api/update/log":
+            return self.send(200, webterm.agent_call("update-log", timeout=10))
+        if p == "/api/swarm":
+            return self.send(200, metrics.cached("swarm", 4, docker_api.swarm))
+        if p == "/api/swarm/logs":
+            return self.send(200, {"logs": docker_api.service_logs(q.get("id", ""), q.get("tail", 200))})
         if p == "/api/me":
             c = AUTH.cfg() or {}
             return self.send(200, {"user": c.get("username"), "totp": bool(c.get("totp_secret")),
-                                   "ip": self.client_ip(), "version": VERSION})
+                                   "ip": self.client_ip(), "version": VERSION,
+                                   "agent": webterm.agent_available(),
+                                   "term_unlocked": sess.get("term_until", 0) > time.time()})
         if p == "/api/overview":
             snap = SAMPLER.get()
             d = DOCKER.get()
@@ -285,6 +315,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "webhook precisa comecar com https://"})
             STORE.save_settings(clean)
             STORE.event("settings", ip, ",".join(sorted(clean.keys())))
+            return self.send(200, {"ok": True})
+        if p == "/api/term/unlock":
+            c = AUTH.cfg() or {}
+            if not authmod.verify_password(str(data.get("password", ""))[:256], c.get("password_hash", "")):
+                AUTH._register_fail(ip)
+                STORE.event("term_unlock_fail", ip, "")
+                return self.send(401, {"error": "senha incorreta"})
+            self.session()["term_until"] = time.time() + TERM_UNLOCK_SECS
+            STORE.event("term_unlock", ip, "")
+            return self.send(200, {"ok": True})
+        if p == "/api/update":
+            r = webterm.agent_call("update", timeout=30)
+            STORE.event("panel_update", ip, "ok" if r.get("ok") else r.get("error", ""))
+            return self.send(200 if r.get("ok") else 500, r)
+        if p == "/api/swarm/action":
+            try:
+                docker_api.service_action(str(data.get("id", "")), str(data.get("action", "")))
+            except Exception as e:
+                return self.send(400, {"error": str(e)})
+            STORE.event("swarm_" + str(data.get("action", "")), ip, str(data.get("id", "")))
+            metrics._cache.pop("swarm", None)
             return self.send(200, {"ok": True})
         if p == "/api/settings/test":
             errs = notify(STORE.settings(), "[VM//PANEL %s] Teste de notificacao OK" % SAMPLER.static["hostname"])

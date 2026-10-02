@@ -142,14 +142,17 @@ class DockerWatcher(object):
                     ports.append("%s:%s->%s/%s" % (p.get("IP", ""), p["PublicPort"], p["PrivatePort"], p["Type"]))
                 else:
                     ports.append("%s/%s" % (p["PrivatePort"], p["Type"]))
+            name = (c.get("Names") or ["/?"])[0].lstrip("/")
             out.append({
                 "id": c["Id"][:12],
-                "name": (c.get("Names") or ["/?"])[0].lstrip("/"),
-                "image": c.get("Image"),
+                "name": name,
+                # nome amigavel: em tarefas do Swarm usa o nome do servico (sem o sufixo .1.xyz)
+                "label": labels.get("com.docker.swarm.service.name") or name,
+                "image": (c.get("Image") or "").split("@")[0],
                 "state": c.get("State"),
                 "status": c.get("Status"),
                 "created": c.get("Created"),
-                "project": labels.get("com.docker.compose.project", ""),
+                "project": labels.get("com.docker.compose.project", "") or labels.get("com.docker.stack.namespace", ""),
                 "ports": sorted(set(ports)),
                 "cpu": _cpu_pct(s) if s else 0.0,
                 "mem_used": used, "mem_limit": limit,
@@ -252,3 +255,97 @@ def disk_usage():
     cache = sum(b.get("Size", 0) for b in d.get("BuildCache") or [])
     return {"images": img, "images_reclaimable": img_unused, "containers": cont,
             "volumes": vol, "volumes_count": len(vols), "build_cache": cache}
+
+
+# ---------------------------------------------------------------- Docker Swarm (stacks e servicos)
+
+def swarm():
+    try:
+        info = request("GET", "/info")
+    except Exception:
+        return {"active": False, "services": [], "stacks": []}
+    if (info.get("Swarm") or {}).get("LocalNodeState") != "active":
+        return {"active": False, "services": [], "stacks": []}
+    services = request("GET", "/services")
+    tasks = request("GET", "/tasks")
+    run = {}
+    for t in tasks:
+        sid = t.get("ServiceID")
+        st = (t.get("Status") or {}).get("State")
+        r = run.setdefault(sid, {"running": 0, "error": ""})
+        if st == "running" and t.get("DesiredState") == "running":
+            r["running"] += 1
+        elif t.get("DesiredState") == "running" and (t.get("Status") or {}).get("Err"):
+            r["error"] = t["Status"]["Err"][:200]
+    out = []
+    for s in services:
+        spec = s.get("Spec", {})
+        labels = spec.get("Labels") or {}
+        mode = spec.get("Mode", {})
+        desired = mode.get("Replicated", {}).get("Replicas") if "Replicated" in mode else None
+        image = spec.get("TaskTemplate", {}).get("ContainerSpec", {}).get("Image", "").split("@")[0]
+        domains = []
+        for k, v in labels.items():
+            if k.startswith("traefik.http.routers.") and k.endswith(".rule") and "Host(" in v:
+                domains += [x.strip("`'\" ") for x in v.split("Host(")[1].split(")")[0].split(",")]
+        r = run.get(s["ID"], {"running": 0, "error": ""})
+        out.append({
+            "id": s["ID"][:12], "name": spec.get("Name"),
+            "stack": labels.get("com.docker.stack.namespace", ""),
+            "image": image, "mode": "global" if desired is None else "replicated",
+            "desired": desired, "running": r["running"], "error": r["error"],
+            "updated": s.get("UpdatedAt", "")[:19].replace("T", " "),
+            "domains": sorted(set(d for d in domains if d)),
+        })
+    out.sort(key=lambda x: (x["stack"], x["name"]))
+    stacks = {}
+    for s in out:
+        k = s["stack"] or "(sem stack)"
+        st = stacks.setdefault(k, {"name": k, "services": 0, "healthy": 0})
+        st["services"] += 1
+        if s["desired"] is None or s["running"] >= (s["desired"] or 0):
+            st["healthy"] += 1
+    return {"active": True, "services": out, "stacks": sorted(stacks.values(), key=lambda x: x["name"])}
+
+
+def _resolve_service(name_or_id):
+    for s in request("GET", "/services"):
+        if s["ID"].startswith(name_or_id) and len(name_or_id) >= 6 or s.get("Spec", {}).get("Name") == name_or_id:
+            return s
+    raise RuntimeError("servico nao encontrado: %s" % name_or_id)
+
+
+def service_action(name_or_id, act):
+    """restart = reinicia todas as tarefas (equivale a `docker service update --force`)."""
+    if act != "restart":
+        raise RuntimeError("acao invalida")
+    s = _resolve_service(name_or_id)
+    spec = s["Spec"]
+    tt = spec.setdefault("TaskTemplate", {})
+    tt["ForceUpdate"] = int(tt.get("ForceUpdate", 0)) + 1
+    body = json.dumps(spec).encode()
+    c = _UnixConn(SOCK, timeout=30)
+    try:
+        c.request("POST", "/services/%s/update?version=%d" % (s["ID"], s["Version"]["Index"]), body=body,
+                  headers={"Host": "docker", "Content-Type": "application/json"})
+        r = c.getresponse()
+        data = r.read()
+        if r.status >= 400:
+            raise RuntimeError("docker %s: %s" % (r.status, data.decode("utf-8", "replace")[:300]))
+    finally:
+        c.close()
+    return True
+
+
+def service_logs(name_or_id, tail=200):
+    s = _resolve_service(name_or_id)
+    tail = max(10, min(int(tail), 2000))
+    raw = request("GET", "/services/%s/logs?stdout=1&stderr=1&timestamps=1&tail=%d" % (s["ID"], tail),
+                  timeout=30, raw=True)
+    out = []
+    i = 0
+    while i + 8 <= len(raw) and raw[i] in (0, 1, 2) and raw[i + 1:i + 4] == b"\0\0\0":
+        size = struct.unpack(">I", raw[i + 4:i + 8])[0]
+        out.append(raw[i + 8:i + 8 + size].decode("utf-8", "replace"))
+        i += 8 + size
+    return "".join(out) if out else raw.decode("utf-8", "replace")
