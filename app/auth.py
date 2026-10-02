@@ -13,6 +13,9 @@ import threading
 import time
 
 AUTH_FILE = os.environ.get("VMPANEL_AUTH", "/etc/vmpanel/auth.json")
+# sessoes sobrevivem a reinicios do painel (ex.: botao de atualizar); so guarda o hash do token
+SESSIONS_FILE = os.environ.get("VMPANEL_SESSIONS", os.path.join(
+    os.path.dirname(os.environ.get("VMPANEL_DB", "/var/lib/vmpanel/vmpanel.db")), "sessions.json"))
 
 SCRYPT_N = 2 ** 15
 SCRYPT_R = 8
@@ -112,6 +115,37 @@ class Auth(object):
         self.last_totp_counter = -1
         self._mtime = 0
         self._cfg = None
+        self._saved_at = 0
+        self._load_sessions()
+
+    def _load_sessions(self):
+        try:
+            with open(SESSIONS_FILE) as f:
+                data = json.load(f)
+            m = os.path.getmtime(AUTH_FILE)
+        except (OSError, ValueError):
+            return
+        if data.get("auth_mtime") != m:
+            return   # credenciais trocadas desde entao
+        now = time.time()
+        self._cfg, self._mtime = load_auth(), m
+        for k, v in (data.get("sessions") or {}).items():
+            if now - v.get("seen", 0) <= SESSION_IDLE and now - v.get("created", 0) <= SESSION_ABSOLUTE:
+                self.sessions[k] = v
+
+    def _save_sessions(self):
+        """Chamar com self.lock. O desbloqueio do terminal nao e persistido."""
+        self._saved_at = time.time()
+        try:
+            data = {"auth_mtime": self._mtime, "sessions": {
+                k: {x: y for x, y in v.items() if x != "term_until"} for k, v in self.sessions.items()}}
+            tmp = SESSIONS_FILE + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, SESSIONS_FILE)
+        except OSError:
+            pass
 
     # recarrega o arquivo se ele mudar (ex.: `vmpanel passwd`)
     def cfg(self):
@@ -124,6 +158,7 @@ class Auth(object):
             self._mtime = m
             with self.lock:
                 self.sessions.clear()   # credenciais trocadas: derruba todas as sessoes
+                self._save_sessions()
         return self._cfg
 
     def totp_enabled(self):
@@ -196,6 +231,7 @@ class Auth(object):
         with self.lock:
             self.sessions[hashlib.sha256(token.encode()).hexdigest()] = {
                 "created": now, "seen": now, "ip": ip, "ua": (ua or "")[:200]}
+            self._save_sessions()
         return token
 
     def get_session(self, token):
@@ -210,18 +246,23 @@ class Auth(object):
                 return None
             if now - s["seen"] > SESSION_IDLE or now - s["created"] > SESSION_ABSOLUTE:
                 del self.sessions[key]
+                self._save_sessions()
                 return None
             s["seen"] = now
+            if now - self._saved_at > 60:
+                self._save_sessions()
             return s
 
     def destroy_session(self, token):
         if token:
             with self.lock:
                 self.sessions.pop(hashlib.sha256(token.encode()).hexdigest(), None)
+                self._save_sessions()
 
     def destroy_all(self):
         with self.lock:
             self.sessions.clear()
+            self._save_sessions()
 
     def list_sessions(self):
         with self.lock:
