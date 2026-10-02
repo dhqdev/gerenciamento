@@ -624,9 +624,9 @@
     function js(src) {
       return new Promise(function (ok, bad) { var s = h("script", { src: src }); s.onload = ok; s.onerror = bad; document.head.appendChild(s); });
     }
-    document.head.appendChild(h("link", { rel: "stylesheet", href: "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" }));
-    return js("https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js")
-      .then(function () { return js("https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"); });
+    document.head.appendChild(h("link", { rel: "stylesheet", href: "/static/vendor/xterm.css" }));
+    return js("/static/vendor/xterm.js")
+      .then(function () { return js("/static/vendor/addon-fit.js"); });
   }
   function closeTerminal() {
     if (termWs) { try { termWs.close(); } catch (_) {} termWs = null; }
@@ -664,7 +664,7 @@
         if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       };
       window.addEventListener("resize", termResize);
-    }).catch(function () { toast("Nao consegui carregar o terminal (cdn.jsdelivr.net bloqueado?)", true); });
+    }).catch(function () { toast("Nao consegui carregar o terminal", true); });
   }
   VIEWS.term = {
     load: function () { return api("/api/me"); },

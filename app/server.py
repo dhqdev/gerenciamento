@@ -35,8 +35,9 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COOKIE = "vmp_session"
 MAX_BODY = 64 * 1024
 
-CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
-       "style-src 'self' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+# 'unsafe-inline' so em estilos: o xterm.js cria <style> para as cores do terminal
+CSP = ("default-src 'self'; script-src 'self'; "
+       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
