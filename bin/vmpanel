@@ -417,6 +417,7 @@ cmd_domain() {
   fi
   [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "Dominio invalido: $domain"
   check_dns "$domain" || warn "Vou configurar mesmo assim; o HTTPS sai assim que o DNS propagar."
+  set_env VMPANEL_DOMAIN "$domain"
 
   if detect_traefik; then
     setup_traefik "$domain"
@@ -476,6 +477,10 @@ cmd_update() {
   new="$(git -C "$APP_DIR" rev-parse --short HEAD)"
   install_service
   local domain; domain="$(get_env VMPANEL_DOMAIN)"
+  if [ -z "$domain" ] && [ -f "$CADDY_SITE" ]; then
+    # instalacoes antigas em que o Caddy falhou antes de gravar o dominio
+    domain="$(awk '/^[A-Za-z0-9.-]+[[:space:]]*\{/{print $1; exit}' "$CADDY_SITE")"
+  fi
   if [ -n "$domain" ] && detect_traefik; then
     setup_traefik "$domain"   # tambem migra instalacoes antigas que tentaram usar o Caddy
     set_env VMPANEL_DOMAIN "$domain"
