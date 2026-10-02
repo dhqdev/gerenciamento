@@ -222,9 +222,12 @@ cmd_setup() {
     [ -n "$d" ] || d="$(ask "Docker nao encontrado. Instalar agora? [s/N]: " n)"
     if [[ "$d" =~ ^[sSyY] ]]; then
       say "Instalando Docker (get.docker.com)..."
-      curl -fsSL https://get.docker.com | sh
-      systemctl enable --now docker
-      usermod -aG docker "$SVC_USER"
+      if curl -fsSL https://get.docker.com | sh; then
+        systemctl enable --now docker || true
+        usermod -aG docker "$SVC_USER"
+      else
+        warn "Nao consegui instalar o Docker agora. Depois de instalar, rode: sudo vmpanel restart"
+      fi
     fi
   fi
 
@@ -242,7 +245,8 @@ cmd_setup() {
   local domain="${VMPANEL_DOMAIN:-}"
   if [ -z "$domain" ] && [ -z "$(get_env VMPANEL_DOMAIN)" ]; then
     echo
-    say "Dominio do painel (ex.: painel.seudominio.com). O registro DNS A deve apontar para ${D}$(public_ip)${N}"
+    local ip; ip="$(public_ip)"
+    say "Dominio do painel (ex.: painel.seudominio.com). O registro DNS A deve apontar para ${D}${ip:-o IP publico da VM}${N}"
     domain="$(ask "Dominio (vazio = acesso so por tunel SSH): " "")"
   fi
   domain="${domain:-$(get_env VMPANEL_DOMAIN)}"
@@ -330,14 +334,15 @@ cmd_doctor() {
   echo "== docker"
   if [ -S /var/run/docker.sock ]; then
     id -nG "$SVC_USER" 2>/dev/null | grep -qw docker && echo "ok (usuario $SVC_USER no grupo docker)" \
-      || echo "usuario $SVC_USER fora do grupo docker -> sudo usermod -aG docker $SVC_USER && sudo systemctl restart vmpanel"
+      || echo "usuario $SVC_USER sem acesso ao Docker -> rode: sudo vmpanel restart"
   else echo "docker nao instalado"; fi
   local domain; domain="$(get_env VMPANEL_DOMAIN)"
   echo "== dominio: ${domain:-(nenhum, so tunel SSH)}"
   if [ -n "$domain" ]; then
     check_dns "$domain" || true
     systemctl is-active caddy >/dev/null 2>&1 && echo "caddy ativo" || echo "caddy PARADO (journalctl -u caddy)"
-    curl -fsS -m 8 -o /dev/null -w "https://$domain -> HTTP %{http_code}\n" "https://$domain/healthz" || warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"
+    local code; code="$(curl -sS -m 8 -o /dev/null -w "%{http_code}" "https://$domain/healthz" 2>/dev/null || true)"
+    [ "$code" = "200" ] && say "https://$domain respondendo (HTTP 200)" || warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"
   fi
   echo "== versao"; git -C "$APP_DIR" log -1 --format='%h %cd %s' --date=short 2>/dev/null || true
 }
@@ -382,7 +387,7 @@ case "${1:-help}" in
   2fa-off)   need_root 2fa-off; manage 2fa-off; chown root:"$SVC_USER" "$CONF_DIR/auth.json"; chmod 0640 "$CONF_DIR/auth.json" ;;
   status)    systemctl status vmpanel --no-pager ;;
   logs)      journalctl -u vmpanel -f -n 100 ;;
-  restart)   need_root restart; systemctl restart vmpanel; wait_up && say "ok" ;;
+  restart)   need_root restart; install_service; systemctl restart vmpanel; wait_up && say "ok" ;;
   doctor)    cmd_doctor ;;
   uninstall) cmd_uninstall ;;
   help|-h|--help) usage ;;
