@@ -34,6 +34,14 @@ def ask(prompt, secret=False):
     return TTY_IN.readline().strip()
 
 
+def has_tty():
+    try:
+        open("/dev/tty").close()
+        return True
+    except OSError:
+        return False
+
+
 def strong(pw):
     classes = sum(bool(re.search(r, pw)) for r in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^a-zA-Z0-9]"))
     return len(pw) >= 12 and classes >= 3
@@ -53,6 +61,8 @@ def cmd_passwd():
     if not re.match(r"^[A-Za-z0-9_.@-]{3,64}$", user):
         sys.exit("Usuario invalido (3-64 caracteres: letras, numeros, _ . @ -)")
     pw = os.environ.get("VMPANEL_PASSWORD")
+    if not pw and not has_tty():
+        sys.exit("Sem terminal interativo: defina VMPANEL_USER e VMPANEL_PASSWORD ou rode 'sudo vmpanel passwd' via SSH.")
     if not pw:
         while True:
             pw = ask("Senha (min. 12 caracteres, misture maiusculas, numeros e simbolos): ", True)
@@ -81,6 +91,8 @@ def show_qr(uri):
 
 
 def cmd_2fa_on():
+    if not has_tty():
+        sys.exit("2FA precisa de terminal interativo: rode 'sudo vmpanel 2fa-on' via SSH.")
     data = load()
     if not data.get("password_hash"):
         sys.exit("Defina a senha primeiro: vmpanel passwd")
