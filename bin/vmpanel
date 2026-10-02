@@ -33,6 +33,11 @@ set_env() {
 }
 port() { local p; p="$(get_env VMPANEL_PORT)"; echo "${p:-8787}"; }
 
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
+# espera o apt liberar (VM recem-criada costuma estar rodando unattended-upgrades)
+apt_get() { apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+
 pkg_mgr() {
   if command -v apt-get >/dev/null 2>&1; then echo apt
   elif command -v dnf >/dev/null 2>&1; then echo dnf
@@ -55,24 +60,37 @@ install_caddy() {
   say "Instalando Caddy (proxy reverso com HTTPS automatico Let's Encrypt)..."
   case "$(pkg_mgr)" in
     apt)
-      apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https gnupg >/dev/null 2>&1 || true
-      if curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
-        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list \
-        && apt-get update -qq && apt-get install -y -qq caddy; then
+      # 1) repositorio oficial do Caddy (versao mais recente)
+      local key=/usr/share/keyrings/caddy-stable-archive-keyring.gpg list=/etc/apt/sources.list.d/caddy-stable.list
+      apt_get install -y -qq debian-keyring debian-archive-keyring apt-transport-https gnupg >/dev/null 2>&1 || true
+      if curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o "$key" 2>/dev/null \
+        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > "$list" \
+        && apt_get update -qq >/dev/null 2>&1 && apt_get install -y -qq caddy >/dev/null 2>&1; then
         return
-      fi ;;
+      fi
+      rm -f "$list" "$key"   # nao deixa repositorio quebrado para tras
+      # 2) pacote da propria distro (Ubuntu 22.04+ / Debian 12+)
+      if apt_get install -y -qq caddy >/dev/null 2>&1; then return; fi ;;
     dnf|yum)
       if "$(pkg_mgr)" install -y -q 'dnf-command(copr)' >/dev/null 2>&1 && dnf copr enable -y @caddy/caddy >/dev/null 2>&1 \
-        && dnf install -y -q caddy; then
+        && dnf install -y -q caddy >/dev/null 2>&1; then
         return
       fi ;;
   esac
-  warn "Pacote do Caddy indisponivel; baixando binario oficial do GitHub..."
+  # 3) binario oficial do GitHub
+  warn "Pacote do Caddy indisponivel; baixando binario oficial..."
   local ver tmp
-  ver="$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)"
-  [ -n "$ver" ] || die "Nao consegui descobrir a versao do Caddy"
   tmp="$(mktemp -d)"
-  curl -fsSL "https://github.com/caddyserver/caddy/releases/download/${ver}/caddy_${ver#v}_linux_$(arch_go).tar.gz" | tar xz -C "$tmp" caddy
+  ver="$(curl -fsSIL -o /dev/null -w '%{url_effective}' https://github.com/caddyserver/caddy/releases/latest 2>/dev/null | sed -n 's|.*/tag/||p')"
+  if [ -n "$ver" ] && curl -fsSL "https://github.com/caddyserver/caddy/releases/download/${ver}/caddy_${ver#v}_linux_$(arch_go).tar.gz" | tar xz -C "$tmp" caddy 2>/dev/null; then
+    :
+  # 4) servidor de downloads do Caddy
+  elif curl -fsSL -o "$tmp/caddy" "https://caddyserver.com/api/download?os=linux&arch=$(arch_go)"; then
+    :
+  else
+    rm -rf "$tmp"
+    die "Nao consegui baixar o Caddy. Verifique a internet da VM e rode de novo: sudo vmpanel setup"
+  fi
   install -m 0755 "$tmp/caddy" /usr/local/bin/caddy
   rm -rf "$tmp"
   getent group caddy >/dev/null || groupadd --system caddy

@@ -31,9 +31,12 @@ printf '%s\n' "$N"
 
 say "Instalando dependencias do sistema (git, python3, curl, qrencode)..."
 if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq git python3 curl ca-certificates iproute2 procps qrencode >/dev/null
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+  # VM recem-criada costuma estar com o apt ocupado (unattended-upgrades): espera ate 10 min
+  apt-get -o DPkg::Lock::Timeout=600 update -qq || say "Aviso: 'apt-get update' teve erros; continuando..."
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq git python3 curl ca-certificates iproute2 procps >/dev/null \
+    || die "Falha ao instalar dependencias (veja: sudo apt-get install git python3 curl)"
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq qrencode >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
   dnf install -y -q git python3 curl ca-certificates iproute procps-ng >/dev/null
   dnf install -y -q qrencode >/dev/null 2>&1 || true
