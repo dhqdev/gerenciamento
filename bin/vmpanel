@@ -276,6 +276,22 @@ setup_traefik() {
   [ -n "$TRAEFIK_RESOLVER" ] && labels+=(--label "traefik.http.routers.vmpanel.tls.certresolver=$TRAEFIK_RESOLVER")
   local cmd=(alpine/socat -d "TCP-LISTEN:8787,fork,reuseaddr" "TCP:$gw:$(port)")
 
+  # se a ponte ja existe com a mesma configuracao, nao recria (evita alguns segundos de "Bad Gateway")
+  local spec current=""
+  spec="$(printf '%s\n' "$TRAEFIK_MODE" "${labels[@]}" "${cmd[@]}" | sha256sum | cut -c1-16)"
+  labels+=(--label "vmpanel.spec=$spec")
+  if [ "$TRAEFIK_MODE" = swarm ]; then
+    current="$(docker service inspect vmpanel-proxy --format '{{index .Spec.Labels "vmpanel.spec"}}' 2>/dev/null || true)"
+  else
+    [ "$(docker inspect -f '{{.State.Running}}' vmpanel-proxy 2>/dev/null)" = true ] &&
+      current="$(docker inspect vmpanel-proxy --format '{{index .Config.Labels "vmpanel.spec"}}' 2>/dev/null || true)"
+  fi
+  if [ "$current" = "$spec" ]; then
+    say "Rota https://$domain no Traefik ja esta publicada."
+    disable_our_caddy
+    return 0
+  fi
+
   remove_traefik_proxy quiet
   say "Publicando a rota https://$domain no Traefik..."
   if [ "$TRAEFIK_MODE" = swarm ]; then
