@@ -512,6 +512,8 @@ cmd_doctor() {
     else
       systemctl is-active caddy >/dev/null 2>&1 && echo "caddy ativo" || echo "caddy PARADO (journalctl -u caddy)"
     fi
+    local lc; lc="$(curl -sk -m 8 -o /dev/null -w "%{http_code}" --resolve "$domain:443:127.0.0.1" "https://$domain/healthz" 2>/dev/null || true)"
+    [ "$lc" = "200" ] && echo "rota local ok (proxy -> painel)" || echo "rota local FALHOU (HTTP $lc)"
     local code; code="$(curl -sS -m 8 -o /dev/null -w "%{http_code}" "https://$domain/healthz" 2>/dev/null || true)"
     [ "$code" = "200" ] && say "https://$domain respondendo (HTTP 200)" || warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"
   fi
