@@ -257,7 +257,7 @@ svg.ico { width: 1em; height: 1em; fill: currentColor; display: inline-block; ve
 }
 .key.on { background: var(--accent); color: var(--ink); }
 .key:active { transform: translate(2px, 2px); box-shadow: none; }
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 760px) {
   .keybar { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
   .keybar::-webkit-scrollbar { display: none; }
 }
