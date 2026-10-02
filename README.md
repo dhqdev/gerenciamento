@@ -1,6 +1,6 @@
 # VM//PANEL
 
-Painel de monitoramento da sua VM com visual de terminal retrô (fósforo verde, scanlines de CRT). Mostra CPU, RAM, discos, rede, processos, containers Docker, segurança e histórico, tudo num só lugar e protegido por um login único.
+Painel de monitoramento da sua VM com cara de videogame 16 bits (caixas de diálogo de RPG, barras de HP, fonte pixelada). Mostra CPU, RAM, discos, rede, processos, Docker e Swarm, segurança e histórico, tem **terminal da VM no navegador** e **botão para se atualizar sozinho**, tudo protegido por um login único.
 
 ```
  __   ____  __    __  __  ___  _   _  _ ___ _
@@ -39,6 +39,8 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/update.sh
 curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/uninstall.sh | sudo bash
 ```
 
+Depois de instalado, dá para atualizar sem entrar na VM: o botão **★ ATUALIZAR PAINEL** no topo mostra o que mudou no GitHub e aplica com um clique (o painel reinicia sozinho e você continua logado).
+
 A remoção apaga só o que é do painel: o serviço, a ponte `vmpanel-proxy`, as regras de firewall do painel, os dados e as credenciais. Docker, Traefik, Portainer e os seus containers não são tocados.
 
 ### VM que já tem Traefik (Docker Swarm, Portainer, etc.)
@@ -74,21 +76,24 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/install.s
 
 | Aba | Conteúdo |
 | --- | --- |
-| `1` PAINEL | CPU total e por núcleo, load, steal, RAM, swap, discos, IO, rede ao vivo com gráficos, resumo do Docker, alertas ativos |
-| `2` DOCKER | Todos os containers com CPU, memória, rede e portas; **iniciar, parar e reiniciar**; logs ao vivo com filtro; detalhes (volumes, redes, health, restarts); imagens e uso de disco do Docker |
+| `1` STATUS | CPU total e por núcleo, load, steal, RAM, swap, discos, IO, rede ao vivo com gráficos, resumo do Docker, alertas ativos |
+| `2` DOCKER | **Docker Swarm:** stacks e serviços com réplicas, domínio de cada um (lido do Traefik), logs e botão de reiniciar o serviço. Todos os containers com CPU, memória, rede e portas; **iniciar, parar e reiniciar**; logs ao vivo com filtro; detalhes (volumes, redes, health, restarts); imagens e uso de disco do Docker |
 | `3` PROCESSOS | Lista estilo `top`, ordenável por CPU, memória ou PID, com busca |
 | `4` REDE | Tráfego por interface, IPs, portas abertas (marcando as expostas para a internet), conexões TCP e IPs mais conectados |
 | `5` DISCOS | Todas as partições com uso e inodes, gráfico de leitura/escrita e ocupação por disco |
 | `6` SISTEMA | Hardware e SO, serviços importantes (docker, caddy, ssh...), unidades systemd com falha, atualizações pendentes (incluindo de segurança) e aviso de reboot necessário |
 | `7` SEGURANÇA | Tentativas de login SSH com falha nas últimas 24h, IPs atacantes, usuários tentados, quem está logado na VM, sessões abertas no painel e log de auditoria |
 | `8` HISTÓRICO | Gráficos de 1h, 6h, 24h, 7 e 30 dias (CPU, memória, swap, rede, disco, load) |
-| `9` CONFIG | Limites de alerta, notificações por Discord e Telegram, tema de cor e efeito CRT |
+| `9` TERMINAL | Terminal completo da VM no navegador (cores, `htop`, `nano`, redimensiona sozinho). Pede a senha de novo e fica liberado por 30 min |
+| `0` CONFIG | Limites de alerta, notificações por Discord e Telegram, tema e efeito de TV antiga |
 
 **Vigia do Oracle Always Free:** a Oracle pode recuperar instâncias gratuitas que ficam ociosas (CPU no percentil 95 abaixo de 20% durante 7 dias). O painel calcula isso com o histórico e avisa quando a VM está em risco.
 
 **Alertas:** CPU ou memória altas por X minutos, disco cheio, container que parou e cada novo login no painel. Chegam no Discord (webhook) e/ou Telegram (bot).
 
-**Console retrô:** na barra inferior dá para digitar comandos como `help`, `restart nome-do-container`, `logs nome`, `df`, `free`, `ps nginx`, `theme amber`, `crt off`. As teclas `1` a `9` trocam de aba e `/` foca o console. Temas: green, amber, cyan, white, pink.
+**Atalhos e temas:** as teclas `1` a `9` e `0` trocam de aba, `R` atualiza os dados e `Esc` fecha janelas. Temas: **16-BIT** (padrão), **NES**, **ARCADE NEON** e **GAME BOY**, mais o efeito opcional de TV antiga (scanlines).
+
+**Terminal web:** quem abre o shell é um pequeno agente root (`vmpanel-agent`) que só aceita conexões do serviço do painel por um socket local. O shell roda com o seu usuário normal da VM (ex.: `ubuntu`), então use `sudo` para comandos de administrador. Para trocar o usuário: `sudo vmpanel terminal user root`. Para desligar o terminal de vez: `sudo vmpanel terminal off`.
 
 ## Segurança
 
@@ -99,7 +104,8 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/install.s
 - Proteção CSRF (cabeçalho próprio e checagem de Origin), Content-Security-Policy rígida, sem scripts inline, HSTS.
 - O servidor só escuta em `127.0.0.1`; quem fala com a internet é o Caddy, com HTTPS.
 - O serviço roda com o usuário sem privilégios `vmpanel` e com o sandbox do systemd (`ProtectSystem=strict`, `NoNewPrivileges` e outros).
-- Todo login, falha, bloqueio e ação no Docker fica registrado na auditoria.
+- Todo login, falha, bloqueio, ação no Docker, abertura de terminal e atualização fica registrado na auditoria.
+- **Terminal:** exige a senha de novo (e conta como tentativa errada no bloqueio por IP), vale por 30 min, só aceita WebSocket da mesma origem e pode ser desligado com `sudo vmpanel terminal off`. O agente root só executa ações fixas (abrir o shell, checar versão e atualizar); nada que venha do navegador vira comando root.
 
 > Atenção: estar no grupo `docker` dá controle total sobre os containers. É por isso que o painel tem login forte, 2FA e bloqueio de IP. Ative o 2FA.
 
@@ -114,6 +120,8 @@ sudo vmpanel 2fa-on        # ativa 2FA (mostra QR code)
 sudo vmpanel 2fa-off       # desativa 2FA
 sudo vmpanel domain X      # publica/troca o domínio (ou "domain off")
 sudo vmpanel doctor        # diagnóstico (serviço, Docker, DNS, HTTPS)
+sudo vmpanel terminal off  # desliga o terminal web (on para religar)
+sudo vmpanel terminal user root   # usuário do terminal web
 sudo vmpanel uninstall     # remove o painel
 ```
 
@@ -136,8 +144,12 @@ app/docker_api.py       cliente da API do Docker via unix socket
 app/auth.py             senha scrypt, TOTP, sessões e rate limit
 app/store.py            histórico SQLite, auditoria, configurações e alertas
 app/manage.py           gerenciamento das credenciais
-app/static/             interface retrô (HTML, CSS e JS puros)
-deploy/                 unit do systemd e modelos do Caddy
+app/agent.py            agente root: terminal (PTY), versão e atualização
+app/webterm.py          WebSocket do terminal (biblioteca padrão)
+app/traefik_detect.py   detecta um Traefik já existente na VM
+app/static/             interface 16 bits (HTML, CSS e JS puros; xterm.js em vendor/)
+deploy/                 units do systemd e modelos do Caddy
+update.sh, uninstall.sh atualizar e remover com um comando
 ```
 
 Para rodar localmente durante o desenvolvimento:
