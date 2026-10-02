@@ -102,8 +102,7 @@ install_caddy() {
 
 write_caddy() {
   local domain="$1"
-  mkdir -p /etc/caddy /var/log/caddy
-  chown caddy:caddy /var/log/caddy 2>/dev/null || true
+  mkdir -p /etc/caddy
   sed -e "s|__DOMAIN__|$domain|g" -e "s|__PORT__|$(port)|g" "$APP_DIR/deploy/caddy-site.tmpl" > "$CADDY_SITE"
   local email; email="$(get_env VMPANEL_EMAIL)"
   if [ ! -f "$CADDYFILE" ] || grep -q '^# Gerenciado pelo VM//PANEL' "$CADDYFILE" || grep -qE '^:80[[:space:]]*\{' "$CADDYFILE"; then
@@ -135,31 +134,167 @@ remove_caddy_site() {
       # sobrou so o bloco global: deixa um Caddyfile vazio valido
       echo "# Gerenciado pelo VM//PANEL (sem sites)" > "$CADDYFILE"
     fi
-    systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+    if systemctl is-active --quiet caddy; then systemctl reload caddy 2>/dev/null || true; fi
   fi
 }
 
 # ------------------------------------------------------------------ firewall
+# As regras sao aplicadas por um servico de boot (vmpanel-firewall), sem salvar o iptables
+# inteiro: assim nenhuma regra do Docker ou de outros programas e tocada.
+fw_rule() {  # fw_rule add|del <args do iptables>
+  local op="$1"; shift
+  command -v iptables >/dev/null 2>&1 || return 0
+  if [ "$op" = add ]; then
+    iptables -C INPUT "$@" 2>/dev/null || iptables -I INPUT 1 "$@"
+  else
+    while iptables -C INPUT "$@" 2>/dev/null; do iptables -D INPUT "$@"; done
+  fi
+}
+
+fw_rules() {  # imprime as regras do modo atual, uma por linha
+  case "$(get_env VMPANEL_PROXY)" in
+    caddy)
+      echo "-p tcp -m state --state NEW --dport 80 -j ACCEPT"
+      echo "-p tcp -m state --state NEW --dport 443 -j ACCEPT" ;;
+    traefik)
+      local sub; sub="$(get_env VMPANEL_PROXY_SUBNET)"
+      [ -n "$sub" ] && echo "-s $sub -p tcp --dport $(port) -j ACCEPT" ;;
+  esac
+  return 0
+}
+
+cmd_firewall() {  # chamado no boot pelo vmpanel-firewall.service
+  local r
+  while read -r r; do [ -n "$r" ] && eval "fw_rule add $r"; done < <(fw_rules)
+  return 0
+}
+
+fw_clear() {
+  local r
+  while read -r r; do [ -n "$r" ] && eval "fw_rule del $r"; done < <(fw_rules)
+  return 0
+}
+
 open_firewall() {
-  say "Liberando portas 80 e 443 no firewall da VM..."
-  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
-    firewall-cmd --reload >/dev/null
-  fi
-  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
-  fi
-  # Imagens Ubuntu da Oracle vem com iptables bloqueando tudo menos SSH
-  if command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null | grep -q -- "-j REJECT"; then
-    local p
-    for p in 80 443; do
-      iptables -C INPUT -p tcp -m state --state NEW --dport "$p" -j ACCEPT 2>/dev/null \
-        || iptables -I INPUT 1 -p tcp -m state --state NEW --dport "$p" -j ACCEPT
-    done
-    if command -v netfilter-persistent >/dev/null 2>&1; then netfilter-persistent save >/dev/null 2>&1 || true
-    elif [ -d /etc/iptables ]; then iptables-save > /etc/iptables/rules.v4
+  say "Liberando o acesso no firewall da VM..."
+  if [ "$(get_env VMPANEL_PROXY)" = caddy ]; then
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+      firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
+      firewall-cmd --reload >/dev/null
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
     fi
   fi
+  # Imagens Ubuntu da Oracle vem com iptables bloqueando (REJECT) tudo menos SSH
+  if command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null | grep -q -- "-j REJECT"; then
+    cmd_firewall
+  fi
+  cat > /etc/systemd/system/vmpanel-firewall.service <<UNIT
+[Unit]
+Description=VM//PANEL - regras de firewall do painel
+After=network-online.target docker.service netfilter-persistent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vmpanel firewall
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable vmpanel-firewall >/dev/null 2>&1 || true
+}
+
+# ------------------------------------------------------------------ portas 80/443
+port_owner() {  # quem esta escutando na porta (vazio = livre)
+  ss -tlnpH "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -1
+}
+
+caddy_is_ours() { [ -f "$CADDYFILE" ] && grep -q '^# Gerenciado pelo VM//PANEL' "$CADDYFILE"; }
+
+disable_our_caddy() {
+  # so mexe no Caddy se fomos nos que configuramos (nunca em um Caddy seu)
+  remove_caddy_site
+  if caddy_is_ours && ! grep -qE '^[^#[:space:]{}]' "$CADDYFILE"; then
+    systemctl disable --now caddy >/dev/null 2>&1 || true
+  fi
+}
+
+# ------------------------------------------------------------------ modo Traefik (Docker)
+detect_traefik() {
+  TRAEFIK_MODE=""; TRAEFIK_NAME=""; TRAEFIK_NETWORK=""; TRAEFIK_ENTRYPOINT=""; TRAEFIK_RESOLVER=""
+  command -v docker >/dev/null 2>&1 || return 1
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      TRAEFIK_MODE|TRAEFIK_NAME|TRAEFIK_NETWORK|TRAEFIK_ENTRYPOINT|TRAEFIK_RESOLVER)
+        [[ "$v" =~ ^[A-Za-z0-9_.-]*$ ]] && printf -v "$k" '%s' "$v" ;;
+    esac
+  done < <(python3 "$APP_DIR/app/traefik_detect.py")
+  [ -n "$TRAEFIK_MODE" ]
+}
+
+setup_traefik() {
+  local domain="$1" gw sub node
+  say "Traefik detectado ($TRAEFIK_MODE: $TRAEFIK_NAME). O painel vai entrar por ele, sem mexer nos seus servicos."
+  [ -n "$TRAEFIK_NETWORK" ] || die "Nao descobri a rede do Traefik. Me mande a saida de: docker network ls"
+  say "Rede: $TRAEFIK_NETWORK | entrypoint: $TRAEFIK_ENTRYPOINT | certificado: ${TRAEFIK_RESOLVER:-(padrao do Traefik)}"
+
+  local gwnet="$TRAEFIK_NETWORK"
+  [ "$TRAEFIK_MODE" = swarm ] && gwnet="docker_gwbridge"
+  gw="$(docker network inspect "$gwnet" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null | awk '{print $1}')"
+  sub="$(docker network inspect "$gwnet" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | awk '{print $1}')"
+  [ -n "$gw" ] && [ -n "$sub" ] || die "Nao consegui ler a rede $gwnet do Docker."
+
+  # o painel passa a escutar tambem no IP interno do Docker (nunca na internet)
+  set_env VMPANEL_HOST "127.0.0.1,$gw"
+  set_env VMPANEL_TRUSTED_PROXIES "127.0.0.1/32,::1/128,$sub"
+  set_env VMPANEL_PROXY traefik
+  set_env VMPANEL_PROXY_SUBNET "$sub"
+  open_firewall
+  systemctl restart vmpanel
+  local ok=""
+  for _ in $(seq 1 20); do
+    curl -fsS -m 2 "http://$gw:$(port)/healthz" >/dev/null 2>&1 && { ok=1; break; }
+    sleep 1
+  done
+  [ -n "$ok" ] || die "O painel nao respondeu em $gw:$(port). Rode: sudo vmpanel logs"
+
+  # ponte minima (socat) dentro da rede do Traefik encaminhando para o painel no host
+  local labels=(
+    --label "traefik.enable=true"
+    --label "traefik.docker.network=$TRAEFIK_NETWORK"
+    --label "traefik.http.routers.vmpanel.rule=Host(\`$domain\`)"
+    --label "traefik.http.routers.vmpanel.entrypoints=$TRAEFIK_ENTRYPOINT"
+    --label "traefik.http.routers.vmpanel.tls=true"
+    --label "traefik.http.routers.vmpanel.service=vmpanel"
+    --label "traefik.http.services.vmpanel.loadbalancer.server.port=8787"
+  )
+  [ -n "$TRAEFIK_RESOLVER" ] && labels+=(--label "traefik.http.routers.vmpanel.tls.certresolver=$TRAEFIK_RESOLVER")
+  local cmd=(alpine/socat -d "TCP-LISTEN:8787,fork,reuseaddr" "TCP:$gw:$(port)")
+
+  remove_traefik_proxy quiet
+  say "Publicando a rota https://$domain no Traefik..."
+  if [ "$TRAEFIK_MODE" = swarm ]; then
+    node="$(docker info --format '{{.Swarm.NodeID}}')"
+    docker service create --detach --quiet --name vmpanel-proxy --network "$TRAEFIK_NETWORK" \
+      --constraint "node.id==$node" --limit-memory 32M --restart-condition any \
+      "${labels[@]}" "${cmd[@]}" >/dev/null
+  else
+    docker run -d --name vmpanel-proxy --restart unless-stopped --network "$TRAEFIK_NETWORK" \
+      --memory 32m "${labels[@]}" "${cmd[@]}" >/dev/null
+  fi
+  disable_our_caddy
+}
+
+remove_traefik_proxy() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker service rm vmpanel-proxy >/dev/null 2>&1 || true
+  docker rm -f vmpanel-proxy >/dev/null 2>&1 || true
+  [ "${1:-}" = quiet ] || say "Rota do painel removida do Traefik."
 }
 
 public_ip() {
@@ -272,14 +407,33 @@ cmd_domain() {
   local domain="${1:-}"
   [ -n "$domain" ] || die "uso: vmpanel domain painel.seudominio.com   (ou 'vmpanel domain off')"
   if [ "$domain" = "off" ]; then
-    remove_caddy_site; set_env VMPANEL_DOMAIN ""
+    remove_traefik_proxy quiet
+    fw_clear
+    remove_caddy_site
+    set_env VMPANEL_HOST "127.0.0.1"; set_env VMPANEL_TRUSTED_PROXIES "127.0.0.1/32,::1/128"
+    set_env VMPANEL_PROXY ""; set_env VMPANEL_DOMAIN ""
+    systemctl restart vmpanel
     say "Dominio removido. Acesso apenas via tunel SSH."; return
   fi
   [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "Dominio invalido: $domain"
   check_dns "$domain" || warn "Vou configurar mesmo assim; o HTTPS sai assim que o DNS propagar."
-  install_caddy
-  open_firewall
-  write_caddy "$domain"
+
+  if detect_traefik; then
+    setup_traefik "$domain"
+  else
+    # sem Traefik: usa o Caddy, mas so se as portas estiverem livres (ou ja forem do Caddy)
+    local p o
+    for p in 80 443; do
+      o="$(port_owner "$p")"
+      if [ -n "$o" ] && [ "$o" != caddy ]; then
+        die "A porta $p ja esta em uso por '$o'. Nao vou mexer nela. Me mande a saida de: sudo ss -tlnp | grep -E ':(80|443) '"
+      fi
+    done
+    set_env VMPANEL_PROXY caddy
+    install_caddy
+    open_firewall
+    write_caddy "$domain"
+  fi
   set_env VMPANEL_DOMAIN "$domain"
   finish_msg "$domain"
 }
@@ -322,7 +476,12 @@ cmd_update() {
   new="$(git -C "$APP_DIR" rev-parse --short HEAD)"
   install_service
   local domain; domain="$(get_env VMPANEL_DOMAIN)"
-  [ -n "$domain" ] && [ -f "$CADDY_SITE" ] && write_caddy "$domain"
+  if [ -n "$domain" ] && detect_traefik; then
+    setup_traefik "$domain"   # tambem migra instalacoes antigas que tentaram usar o Caddy
+    set_env VMPANEL_DOMAIN "$domain"
+  elif [ -n "$domain" ] && [ -f "$CADDY_SITE" ]; then
+    write_caddy "$domain"
+  fi
   systemctl restart vmpanel
   wait_up && say "Atualizado: $old -> $new" || die "Servico nao subiu apos atualizar (vmpanel logs)"
 }
@@ -340,7 +499,14 @@ cmd_doctor() {
   echo "== dominio: ${domain:-(nenhum, so tunel SSH)}"
   if [ -n "$domain" ]; then
     check_dns "$domain" || true
-    systemctl is-active caddy >/dev/null 2>&1 && echo "caddy ativo" || echo "caddy PARADO (journalctl -u caddy)"
+    if [ "$(get_env VMPANEL_PROXY)" = traefik ]; then
+      echo "modo: atras do Traefik"
+      if docker service ls --format '{{.Name}} {{.Replicas}}' 2>/dev/null | grep -q '^vmpanel-proxy 1/1' \
+        || docker ps --format '{{.Names}}' 2>/dev/null | grep -qx vmpanel-proxy; then echo "ponte vmpanel-proxy rodando"
+      else echo "ponte vmpanel-proxy PARADA (docker service ps vmpanel-proxy)"; fi
+    else
+      systemctl is-active caddy >/dev/null 2>&1 && echo "caddy ativo" || echo "caddy PARADO (journalctl -u caddy)"
+    fi
     local code; code="$(curl -sS -m 8 -o /dev/null -w "%{http_code}" "https://$domain/healthz" 2>/dev/null || true)"
     [ "$code" = "200" ] && say "https://$domain respondendo (HTTP 200)" || warn "HTTPS ainda nao responde (DNS, Security List da Oracle ou certificado pendente)"
   fi
@@ -349,15 +515,19 @@ cmd_doctor() {
 
 cmd_uninstall() {
   need_root uninstall
-  local c; c="$(ask "Remover o VM//PANEL (servico, dados e credenciais)? Digite REMOVER: " "")"
-  [ "$c" = "REMOVER" ] || die "Cancelado."
-  systemctl disable --now vmpanel 2>/dev/null || true
-  rm -f /etc/systemd/system/vmpanel.service /usr/local/bin/vmpanel
+  if [ "${VMPANEL_YES:-}" != 1 ]; then
+    local c; c="$(ask "Remover o VM//PANEL (servico, dados e credenciais)? Digite REMOVER: " "")"
+    [ "$c" = "REMOVER" ] || die "Cancelado."
+  fi
+  remove_traefik_proxy quiet
+  fw_clear
+  systemctl disable --now vmpanel vmpanel-firewall 2>/dev/null || true
+  rm -f /etc/systemd/system/vmpanel.service /etc/systemd/system/vmpanel-firewall.service /usr/local/bin/vmpanel
   systemctl daemon-reload
-  remove_caddy_site
+  disable_our_caddy
   rm -rf "$CONF_DIR" "$DATA_DIR" "$APP_DIR"
   userdel "$SVC_USER" 2>/dev/null || true
-  say "Removido. (O Caddy e o Docker foram mantidos.)"
+  say "VM//PANEL removido. Seus containers, o Docker e o Traefik nao foram tocados."
 }
 
 usage() {
@@ -390,6 +560,7 @@ case "${1:-help}" in
   restart)   need_root restart; install_service; systemctl restart vmpanel; wait_up && say "ok" ;;
   doctor)    cmd_doctor ;;
   uninstall) cmd_uninstall ;;
+  firewall)  need_root firewall; cmd_firewall ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

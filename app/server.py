@@ -4,11 +4,13 @@
 Servidor HTTP com a biblioteca padrao do Python. Escuta somente em 127.0.0.1;
 o Caddy fica na frente cuidando do HTTPS.
 """
+import ipaddress
 import json
 import mimetypes
 import os
 import socketserver
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,7 +23,11 @@ import metrics              # noqa: E402
 from store import Store, Recorder, notify  # noqa: E402
 
 VERSION = "1.0.0"
-HOST = os.environ.get("VMPANEL_HOST", "127.0.0.1")
+# um ou mais enderecos separados por virgula (ex.: "127.0.0.1,172.18.0.1" no modo Traefik)
+HOSTS = [h.strip() for h in os.environ.get("VMPANEL_HOST", "127.0.0.1").split(",") if h.strip()]
+# proxies cujo X-Forwarded-For e confiavel (Caddy local ou o Traefik do Docker)
+TRUSTED_PROXIES = [ipaddress.ip_network(n.strip(), strict=False) for n in
+                   os.environ.get("VMPANEL_TRUSTED_PROXIES", "127.0.0.1/32,::1/128").split(",") if n.strip()]
 PORT = int(os.environ.get("VMPANEL_PORT", "8787"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COOKIE = "vmp_session"
@@ -48,14 +54,14 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt, *args):
-        pass  # sem log de acesso (o Caddy ja registra)
+        pass  # sem log de acesso (o proxy na frente ja registra)
 
     # ------------------------------------------------------------ utilitarios
 
     def client_ip(self):
         ip = self.client_address[0]
         fwd = self.headers.get("X-Forwarded-For")
-        if fwd and ip in ("127.0.0.1", "::1"):
+        if fwd and trusted_proxy(ip):
             ip = fwd.split(",")[-1].strip()
         return ip
 
@@ -245,7 +251,6 @@ class Handler(BaseHTTPRequestHandler):
             STORE.event("login_ok", ip, (self.headers.get("User-Agent") or "")[:200])
             cfg = STORE.settings()
             if cfg.get("alert_login"):
-                import threading
                 threading.Thread(target=notify, args=(cfg, "[VM//PANEL %s] Login no painel a partir de %s"
                                                       % (SAMPLER.static["hostname"], ip)), daemon=True).start()
             cookie = "%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d%s" % (
@@ -291,6 +296,29 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "nao encontrado"})
 
 
+def trusted_proxy(ip):
+    try:
+        addr = ipaddress.ip_address(ip.split("%")[0])
+    except ValueError:
+        return False
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return any(addr in n for n in TRUSTED_PROXIES)
+
+
+def serve(host):
+    """Escuta em um endereco; se a interface ainda nao existir (ex.: Docker subindo), tenta de novo."""
+    while True:
+        try:
+            srv = Server((host, PORT), Handler)
+        except OSError as e:
+            print("aguardando %s:%d (%s)" % (host, PORT, e), flush=True)
+            time.sleep(5)
+            continue
+        print("VM//PANEL %s ouvindo em http://%s:%d" % (VERSION, host, PORT), flush=True)
+        srv.serve_forever()
+
+
 def oracle_status():
     """Regra de instancia ociosa do Oracle Always Free: CPU p95 < 20% em 7 dias."""
     cpu95, span = STORE.percentile("cpu", 7 * 86400, 95)
@@ -312,9 +340,9 @@ def main():
     RECORDER = Recorder(STORE, SAMPLER, DOCKER, SAMPLER.static["hostname"])
     RECORDER.start()
     STORE.event("start", "", "VM//PANEL %s iniciado" % VERSION)
-    srv = Server((HOST, PORT), Handler)
-    print("VM//PANEL %s ouvindo em http://%s:%d" % (VERSION, HOST, PORT), flush=True)
-    srv.serve_forever()
+    for h in HOSTS[1:]:
+        threading.Thread(target=serve, args=(h,), daemon=True).start()
+    serve(HOSTS[0])
 
 
 if __name__ == "__main__":
