@@ -1,0 +1,19 @@
+# Gerado pelo VM//PANEL (vmpanel domain). Nao edite: sera sobrescrito.
+__DOMAIN__ {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy 127.0.0.1:__PORT__
+	log {
+		output file /var/log/caddy/vmpanel.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

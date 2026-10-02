@@ -1,0 +1,38 @@
+[Unit]
+Description=VM//PANEL - painel retro de monitoramento da VM
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vmpanel
+Group=vmpanel
+EnvironmentFile=-/etc/vmpanel/env
+ExecStart=/usr/bin/python3 /opt/vmpanel/app/server.py
+Restart=always
+RestartSec=3
+StateDirectory=vmpanel
+StateDirectoryMode=0750
+
+# Endurecimento: o painel so le metricas e fala com o socket do Docker
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vmpanel
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

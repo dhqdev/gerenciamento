@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>VM//PANEL - login</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:,">
+<script src="/static/login.js" defer></script>
+</head>
+<body class="crt">
+<div class="login-wrap">
+  <div class="login">
+<pre aria-hidden="true">
+ __      __ __  __     __  __   ____    _    _   _ _____ _
+ \ \    / /|  \/  |   / / / /  |  _ \  / \  | \ | | ____| |
+  \ \  / / | |\/| |  / / / /   | |_) |/ _ \ |  \| |  _| | |
+   \ \/ /  | |  | | / / / /    |  __// ___ \| |\  | |___| |___
+    \__/   |_|  |_|/_/ /_/     |_|  /_/   \_\_| \_|_____|_____|
+</pre>
+    <div class="box">
+      <h2>ACESSO RESTRITO</h2>
+      <p class="dim">SISTEMA DE MONITORAMENTO // IDENTIFIQUE-SE<span class="cursor">&nbsp;</span></p>
+      <form id="f" autocomplete="on">
+        <label class="f"><span>&gt; USUARIO:</span><input id="u" name="username" autocomplete="username" required autofocus></label>
+        <label class="f"><span>&gt; SENHA:</span><input id="p" name="password" type="password" autocomplete="current-password" required></label>
+        <label class="f hidden" id="totp-row"><span>&gt; CODIGO 2FA:</span><input id="t" name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}"></label>
+        <div class="msg" id="msg" role="status" aria-live="polite"></div>
+        <button class="btn" type="submit" id="go">[ ENTRAR ]</button>
+      </form>
+    </div>
+    <p class="faint mono">conexoes sao registradas. tentativas erradas bloqueiam o IP.</p>
+  </div>
+</div>
+</body>
+</html>

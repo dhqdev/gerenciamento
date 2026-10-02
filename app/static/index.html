@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>VM//PANEL</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:,">
+<script src="/static/app.js" defer></script>
+</head>
+<body class="crt">
+<div id="boot" class="hidden" aria-hidden="true"></div>
+
+<div class="wrap">
+  <header class="top">
+<pre class="logo" aria-label="VM//PANEL">
+ __   ____  __    __  __  ___  _   _  _ ___ _
+ \ \ / /  \/  |  / / / / | _ \/_\ | \| | __| |
+  \ V /| |\/| | / / / /  |  _/ _ \| .` | _|| |__
+   \_/ |_|  |_|/_/ /_/   |_|/_/ \_\_|\_|___|____|
+</pre>
+    <div class="hostline" id="hostline">CONECTANDO...</div>
+    <div class="clock"><span id="clock">--:--:--</span><small id="uptime">UPTIME --</small></div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Secoes"></nav>
+
+  <main id="view"></main>
+</div>
+
+<div class="console">
+  <div class="out" id="out" aria-live="polite"></div>
+  <form class="line" id="cmdform">
+    <span class="ps1" id="ps1">vmpanel@host:~$</span>
+    <input id="cmd" autocomplete="off" spellcheck="false" aria-label="Comando" placeholder="digite 'help' e ENTER">
+  </form>
+</div>
+
+<div class="modal hidden" id="modal" role="dialog" aria-modal="true">
+  <div class="box">
+    <h2 id="modal-title">-</h2>
+    <div class="toolbar" id="modal-tools"></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+</body>
+</html>
