@@ -95,6 +95,15 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/install.s
 
 **Terminal web:** quem abre o shell é um pequeno agente root (`vmpanel-agent`) que só aceita conexões do serviço do painel por um socket local. O shell roda com o seu usuário normal da VM (ex.: `ubuntu`), então use `sudo` para comandos de administrador. Para trocar o usuário: `sudo vmpanel terminal user root`. Para desligar o terminal de vez: `sudo vmpanel terminal off`.
 
+## App no celular (PWA)
+
+O painel funciona como app no celular: menu embaixo, janelas que sobem de baixo (arraste para baixo ou use o botão voltar para fechar), tabelas que viram cartões, puxar a tela para atualizar e teclas extras no terminal (CTRL, ESC, TAB, setas, `|`, `~`, Ctrl+C).
+
+- **Android (Chrome):** abra o painel, toque em **MAIS > INSTALAR APP** (ou menu ⋮ > Instalar app).
+- **iPhone (Safari):** Compartilhar > **Adicionar à Tela de Início**.
+
+O app abre em tela cheia com ícone próprio. Os dados nunca ficam guardados no celular: sem internet aparece só a tela de "SEM SINAL".
+
 ## Segurança
 
 - Um único usuário, senha com hash **scrypt** (N=2^15) e comparação em tempo constante.
