@@ -14,6 +14,8 @@ fi
 
 # baixa o codigo novo primeiro, para usar a logica de atualizacao mais recente
 branch="$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD)"
+VMPANEL_OLD_REV="$(git -C "$APP_DIR" rev-parse --short HEAD)"
+export VMPANEL_OLD_REV
 git -C "$APP_DIR" fetch --quiet origin "$branch"
 git -C "$APP_DIR" reset --quiet --hard "origin/$branch"
 chmod 0755 "$APP_DIR/bin/vmpanel"

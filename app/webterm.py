@@ -53,6 +53,8 @@ def handshake(handler):
     if not key or handler.headers.get("Upgrade", "").lower() != "websocket":
         return False
     accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    handler.protocol_version = "HTTP/1.1"
+    handler.close_connection = True
     handler.send_response(101)
     handler.send_header("Upgrade", "websocket")
     handler.send_header("Connection", "Upgrade")

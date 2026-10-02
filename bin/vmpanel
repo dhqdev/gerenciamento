@@ -482,7 +482,7 @@ cmd_update() {
   branch="$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD)"
   git -C "$APP_DIR" fetch --quiet origin "$branch"
   local old new
-  old="$(git -C "$APP_DIR" rev-parse --short HEAD)"
+  old="${VMPANEL_OLD_REV:-$(git -C "$APP_DIR" rev-parse --short HEAD)}"
   git -C "$APP_DIR" reset --quiet --hard "origin/$branch"
   new="$(git -C "$APP_DIR" rev-parse --short HEAD)"
   install_service
