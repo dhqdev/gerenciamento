@@ -539,6 +539,7 @@ cmd_uninstall() {
   remove_traefik_proxy quiet
   fw_clear
   systemctl disable --now vmpanel vmpanel-agent vmpanel-firewall 2>/dev/null || true
+  rm -rf /run/vmpanel
   rm -f /etc/systemd/system/vmpanel.service /etc/systemd/system/vmpanel-agent.service \
     /etc/systemd/system/vmpanel-firewall.service /usr/local/bin/vmpanel
   systemctl daemon-reload

@@ -21,6 +21,7 @@ fi
 docker service rm vmpanel-proxy >/dev/null 2>&1 || true
 docker rm -f vmpanel-proxy >/dev/null 2>&1 || true
 systemctl disable --now vmpanel vmpanel-agent vmpanel-firewall >/dev/null 2>&1 || true
+rm -rf /run/vmpanel
 rm -f /etc/systemd/system/vmpanel.service /etc/systemd/system/vmpanel-agent.service /etc/systemd/system/vmpanel-firewall.service /usr/local/bin/vmpanel
 systemctl daemon-reload
 rm -rf /etc/vmpanel /var/lib/vmpanel
