@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"ok": True})
         if p.startswith("/static/"):
             return self.static(p[len("/static/"):])
-        if p in ("/sw.js", "/manifest.webmanifest"):   # PWA: precisam ficar na raiz do site
+        if p in ("/sw.js", "/manifest.webmanifest", "/favicon.ico"):   # PWA/favicon: precisam ficar na raiz do site
             return self.static(p[1:])
         if p == "/login":
             if self.session():
