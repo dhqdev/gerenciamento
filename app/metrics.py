@@ -259,6 +259,7 @@ class Sampler(object):
         cores = []
         total_pct = 0.0
         steal_pct = 0.0
+        iowait_pct = 0.0
         for k in sorted(cpu, key=lambda x: (len(x), x)):
             if k not in prev["cpu"]:
                 continue
@@ -269,6 +270,8 @@ class Sampler(object):
                 total_pct = pct
                 st = cpu[k][2][7] - prev["cpu"][k][2][7]
                 steal_pct = round(100.0 * st / tot, 1) if tot > 0 else 0.0
+                iw = cpu[k][2][4] - prev["cpu"][k][2][4]
+                iowait_pct = round(100.0 * iw / tot, 1) if tot > 0 else 0.0
             else:
                 cores.append(pct)
 
@@ -321,7 +324,7 @@ class Sampler(object):
             "time": now,
             "uptime": uptime,
             "load": [float(x) for x in load[:3]] if load else [0, 0, 0],
-            "cpu": {"percent": total_pct, "cores": cores, "steal": steal_pct},
+            "cpu": {"percent": total_pct, "cores": cores, "steal": steal_pct, "iowait": iowait_pct},
             "memory": mem,
             "disks": disks(),
             "net": {"rx_rate": rx_rate, "tx_rate": tx_rate, "ifaces": ifaces},
@@ -479,3 +482,118 @@ def pending_updates():
 
 def reboot_required():
     return os.path.exists("/var/run/reboot-required")
+
+
+# ---------------------------------------------------------------- gargalos
+
+def pressure():
+    """PSI do kernel: % do tempo em que tarefas ficaram esperando CPU, memoria ou disco (media 60s)."""
+    out = {}
+    for res in ("cpu", "memory", "io"):
+        for line in _read("/proc/pressure/" + res).splitlines():
+            p = line.split()
+            if p and p[0] in ("some", "full"):
+                vals = dict(x.split("=") for x in p[1:] if "=" in x)
+                out["%s_%s" % (res, p[0])] = float(vals.get("avg60", 0))
+    return out
+
+
+def oom_kills():
+    """Processos mortos por falta de memoria nas ultimas 24h (log do kernel)."""
+    rc, out = run(["journalctl", "-k", "-q", "--no-pager", "-o", "cat", "--since", "24 hours ago"], timeout=20)
+    if rc != 0:
+        return None
+    killed = [l for l in out.splitlines() if "Killed process" in l]
+    return {"count": len(killed), "last": killed[-3:]}
+
+
+def bottlenecks(snap, procs, docker):
+    """Olha o momento atual e aponta o que esta segurando a VM, com uma dica do que fazer."""
+    found = []
+
+    def add(level, title, detail, hint=""):
+        found.append({"level": level, "title": title, "detail": detail, "hint": hint})
+
+    if not snap:
+        return {"items": [], "pressure": {}}
+    cores = len(snap["cpu"]["cores"]) or 1
+    top_cpu = sorted(procs, key=lambda p: -p["cpu"])[:5]
+    top_mem = sorted(procs, key=lambda p: -p["rss"])[:5]
+    cpu = snap["cpu"]["percent"]
+    if cpu >= 70:
+        who = ", ".join("%s (%.0f%%)" % (p["name"], p["cpu"]) for p in top_cpu[:3])
+        add("crit" if cpu >= 90 else "warn", "CPU em %.0f%%" % cpu, "Quem mais usa: " + who,
+            "Veja a aba PROCESSOS ou reinicie o container/servico que esta preso.")
+    if snap["cpu"].get("steal", 0) >= 10:
+        add("warn", "Steal de %.0f%%" % snap["cpu"]["steal"], "A nuvem esta segurando a CPU desta VM (vizinhos barulhentos ou limite do plano).",
+            "Nao e problema seu: se for constante, troque o tipo da instancia.")
+    load = snap["load"][0]
+    if load > cores * 1.5:
+        add("warn", "Carga %.1f para %d nucleos" % (load, cores), "Tem mais trabalho na fila do que nucleos para atender.",
+            "Procure processos travados em disco (estado D) ou excesso de tarefas em paralelo.")
+    m = snap["memory"]
+    if m["percent"] >= 80:
+        who = ", ".join("%s (%s)" % (p["name"], _fmt(p["rss"])) for p in top_mem[:3])
+        add("crit" if m["percent"] >= 92 else "warn", "Memoria em %.0f%%" % m["percent"], "Quem mais usa: " + who,
+            "Limite a memoria dos containers grandes ou crie swap.")
+    if m["swap_total"] and m["swap_percent"] >= 50:
+        add("warn", "Swap em %.0f%%" % m["swap_percent"], "A VM esta usando disco como memoria, o que deixa tudo lento.",
+            "Libere memoria ou aumente a RAM.")
+    if not m["swap_total"] and m["total"] < 2 * 1024 ** 3:
+        add("info", "Sem swap", "VM com pouca RAM e sem swap: um pico de memoria derruba processos.",
+            "Crie um arquivo de swap de 1-2 GB.")
+    if snap["cpu"].get("iowait", 0) >= 15:
+        add("warn", "Espera de disco (iowait) em %.0f%%" % snap["cpu"]["iowait"], "A CPU esta parada esperando o disco.",
+            "Veja abaixo qual disco esta ocupado e quem esta escrevendo.")
+    for d in snap["io"]["devices"]:
+        if d["busy"] >= 80:
+            add("warn", "Disco %s %.0f%% ocupado" % (d["name"], d["busy"]),
+                "Lendo %s/s e escrevendo %s/s." % (_fmt(d["read_rate"]), _fmt(d["write_rate"])),
+                "Banco de dados, logs demais ou swap costumam ser a causa.")
+    for d in snap["disks"]:
+        if d["percent"] >= 80:
+            add("crit" if d["percent"] >= 90 else "warn", "Disco %s em %.0f%%" % (d["mount"], d["percent"]),
+                "%s livres." % _fmt(d["free"]), "Use a LIMPEZA logo acima para liberar espaco.")
+        if d["inodes_percent"] >= 85:
+            add("warn", "Inodes de %s em %.0f%%" % (d["mount"], d["inodes_percent"]),
+                "Muitos arquivos pequenos (cache, sessoes, logs).", "A limpeza de temporarios e caches costuma resolver.")
+    if snap["procs"]["zombie"]:
+        add("info", "%d processo(s) zumbi" % snap["procs"]["zombie"], "Processos que terminaram e o pai nao recolheu.",
+            "Inofensivo em pouca quantidade; se crescer, reinicie o servico pai.")
+    psi = pressure()
+    if psi.get("memory_full", 0) >= 5:
+        add("crit", "Pressao de memoria", "%.0f%% do tempo tudo parou esperando memoria (ultimo minuto)." % psi["memory_full"],
+            "Falta RAM: libere memoria ou aumente a VM.")
+    if psi.get("io_some", 0) >= 30:
+        add("warn", "Pressao de disco", "%.0f%% do tempo alguma tarefa esperou o disco (ultimo minuto)." % psi["io_some"])
+    if psi.get("cpu_some", 0) >= 40 and cpu < 70:
+        add("warn", "Fila de CPU", "%.0f%% do tempo alguma tarefa esperou CPU (ultimo minuto)." % psi["cpu_some"],
+            "Pode ser limite de CPU do container (cgroup) ou steal.")
+    oom = cached("oom", 120, oom_kills)
+    if oom and oom["count"]:
+        add("crit", "%d processo(s) morto(s) por falta de memoria (24h)" % oom["count"], " | ".join(oom["last"])[:400],
+            "O kernel matou processos para nao travar. Aumente a RAM, crie swap ou limite containers.")
+    for c in (docker or {}).get("containers", []):
+        if c["state"] == "restarting":
+            add("crit", "Container reiniciando sem parar: %s" % (c.get("label") or c["name"]), c.get("status", ""),
+                "Abra os LOGS dele na aba DOCKER para ver o erro.")
+        elif c["state"] == "running" and c.get("cpu", 0) >= 80:
+            add("warn", "Container %s usando %.0f%% de CPU" % (c.get("label") or c["name"], c["cpu"]), c.get("image", ""))
+    failed = cached("failed", 15, failed_services)
+    if failed:
+        add("warn", "%d servico(s) com falha no systemd" % len(failed), ", ".join(f["unit"] for f in failed[:5]),
+            "Veja com: systemctl status NOME")
+    order = {"crit": 0, "warn": 1, "info": 2}
+    found.sort(key=lambda x: order.get(x["level"], 3))
+    slim = lambda p: {"pid": p["pid"], "name": p["name"], "user": p["user"], "cpu": p["cpu"], "rss": p["rss"], "cmd": p["cmd"][:160]}
+    return {"items": found, "pressure": psi, "top_cpu": [slim(p) for p in top_cpu], "top_mem": [slim(p) for p in top_mem],
+            "io": snap["io"]["devices"], "iowait": snap["cpu"].get("iowait", 0), "steal": snap["cpu"].get("steal", 0),
+            "load": snap["load"], "cores": cores}
+
+
+def _fmt(n):
+    n = float(n or 0)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or u == "TB":
+            return ("%.0f %s" if u == "B" else "%.1f %s") % (n, u)
+        n /= 1024

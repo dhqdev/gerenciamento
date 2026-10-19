@@ -21,9 +21,9 @@ import auth as authmod      # noqa: E402
 import docker_api           # noqa: E402
 import metrics              # noqa: E402
 import webterm              # noqa: E402
-from store import Store, Recorder, notify  # noqa: E402
+from store import DB_PATH, Store, Recorder, notify  # noqa: E402
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 TERM_UNLOCK_SECS = 30 * 60   # depois de confirmar a senha, o terminal fica liberado por 30 min
 # um ou mais enderecos separados por virgula (ex.: "127.0.0.1,172.18.0.1" no modo Traefik)
 HOSTS = [h.strip() for h in os.environ.get("VMPANEL_HOST", "127.0.0.1").split(",") if h.strip()]
@@ -141,6 +141,23 @@ class Handler(BaseHTTPRequestHandler):
         webterm.bridge_terminal(self.connection, int(q.get("cols", 100)), int(q.get("rows", 30)),
                                 lambda user: STORE.event("terminal", ip, "shell como %s" % user))
 
+    def maint_get(self, what, q):
+        fresh = q.get("fresh") == "1"
+        if what == "diagnose":
+            return self.send(200, metrics.bottlenecks(SAMPLER.get(), SAMPLER.top_processes("cpu", 100000), DOCKER.get()))
+        if what == "check":
+            r = webterm.agent_call("maint-check", timeout=60)
+            items = panel_checks(r.get("ok"))
+            return self.send(200, {"ok": True, "items": items + (r.get("items") or []), "agent_error": r.get("error")})
+        calls = {"scan": ("maint-scan", 300, {"fresh": fresh}), "updates": ("maint-updates", 300, {"fresh": fresh}),
+                 "job": ("maint-job", 10, {}), "du": ("maint-du", 240, {"path": q.get("path", "/")}),
+                 "bigfiles": ("maint-bigfiles", 240, {"fresh": fresh}), "schedules": ("maint-sched-list", 10, {})}
+        if what not in calls:
+            return self.send(404, {"error": "nao encontrado"})
+        action, timeout, params = calls[what]
+        r = webterm.agent_call(action, timeout=timeout, **params)
+        return self.send(200 if r.get("ok") else 502, r)
+
     def static(self, name):
         path = os.path.normpath(os.path.join(STATIC, name))
         if not path.startswith(STATIC + os.sep) or not os.path.isfile(path):
@@ -198,6 +215,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, webterm.agent_call("version"))
         if p == "/api/update/log":
             return self.send(200, webterm.agent_call("update-log", timeout=10))
+        if p.startswith("/api/maint/"):
+            return self.maint_get(p[len("/api/maint/"):], q)
         if p == "/api/swarm":
             return self.send(200, metrics.cached("swarm", 4, docker_api.swarm))
         if p == "/api/swarm/logs":
@@ -333,6 +352,21 @@ class Handler(BaseHTTPRequestHandler):
             r = webterm.agent_call("update", timeout=30)
             STORE.event("panel_update", ip, "ok" if r.get("ok") else r.get("error", ""))
             return self.send(200 if r.get("ok") else 500, r)
+        if p == "/api/maint/run":
+            kind = str(data.get("kind", ""))
+            r = webterm.agent_call("maint-run", timeout=60, kind=kind, params=data.get("params") or {})
+            STORE.event("maint_run", ip, "%s %s" % (r.get("title", kind), "" if r.get("ok") else "ERRO: " + str(r.get("error"))))
+            return self.send(200 if r.get("ok") else 400, r)
+        if p == "/api/maint/schedule":
+            r = webterm.agent_call("maint-sched-add", timeout=20, sched=data)
+            if r.get("ok"):
+                STORE.event("maint_schedule", ip, "%s %s %s" % (data.get("task"), data.get("when"), data.get("at")))
+            return self.send(200 if r.get("ok") else 400, r)
+        if p == "/api/maint/schedule/delete":
+            r = webterm.agent_call("maint-sched-del", timeout=20, id=str(data.get("id", "")))
+            if r.get("ok"):
+                STORE.event("maint_schedule_del", ip, str(data.get("id", "")))
+            return self.send(200 if r.get("ok") else 400, r)
         if p == "/api/swarm/action":
             try:
                 docker_api.service_action(str(data.get("id", "")), str(data.get("action", "")))
@@ -359,6 +393,22 @@ def trusted_proxy(ip):
     if addr.version == 6 and addr.ipv4_mapped:
         addr = addr.ipv4_mapped
     return any(addr in n for n in TRUSTED_PROXIES)
+
+
+def panel_checks(agent_ok):
+    """O que o proprio painel (rodando sem privilegios, no sandbox) consegue acessar."""
+    items = [{"label": "Agente root do painel", "ok": bool(agent_ok),
+              "detail": "respondendo" if agent_ok else "sem resposta: rode o update.sh na VM", "fix": False}]
+    if os.path.exists(docker_api.SOCK):
+        items.append({"label": "Painel le o Docker agora", "ok": docker_api.available(),
+                      "detail": "socket ok" if docker_api.available() else "sem permissao no socket (corrigir e reiniciar)",
+                      "fix": not docker_api.available()})
+    rc, _ = metrics.run(["journalctl", "-q", "-n", "1", "--no-pager"], timeout=10)
+    items.append({"label": "Painel le o journal agora", "ok": rc == 0, "detail": "ok" if rc == 0 else "sem acesso aos logs",
+                  "fix": rc != 0})
+    db_ok = os.access(os.path.dirname(DB_PATH) or ".", os.W_OK)
+    items.append({"label": "Banco do historico gravavel", "ok": db_ok, "detail": DB_PATH, "fix": not db_ok})
+    return items
 
 
 def serve(host):

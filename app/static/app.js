@@ -37,7 +37,7 @@
     term: ["XXXXXXXX", "X......X", "X.X....X", "X..X...X", "X.X.XX.X", "X......X", "XXXXXXXX", "........"],
     more: ["........", "XXXXXXXX", "........", "XXXXXXXX", "........", "XXXXXXXX", "........", "........"],
     net: ["..X..X..", ".XXX.X..", "X.X..X..", "..X..X..", "..X..X.X", "..X.XXX.", "..X..X..", "........"],
-    disks: [".XXXXXX.", "X......X", "XXXXXXXX", "X......X", "X....XXX", "X......X", ".XXXXXX.", "........"],
+    maint: [".....XX.", "....X..X", "....X.X.", "...XXX..", "..XXX...", ".XXX....", "XXX.....", "XX......"],
     system: [".X.X.X..", "XXXXXXX.", ".X...X..", "XX.X.XX.", ".X...X..", "XXXXXXX.", ".X.X.X..", "........"],
     security: ["XXXXXXXX", "X..XX..X", "X..XX..X", "XXXXXXXX", "X..XX..X", ".X.XX.X.", "..XXXX..", "...XX..."],
     history: ["X.......", "X.....X.", "X....XX.", "X.X..XX.", "X.XX.XX.", "X.XXXXX.", "XXXXXXXX", "........"],
@@ -236,7 +236,7 @@
     }
   }
 
-  var live = { cpu: [], mem: [], rx: [], tx: [], rd: [], wr: [] };
+  var live = { cpu: [], mem: [], rx: [], tx: [] };
   function pushLive(k, v) { live[k].push(v); if (live[k].length > 150) live[k].shift(); }
 
   // ------------------------------------------------------------------ navegacao
@@ -247,7 +247,7 @@
     { id: "docker", key: "2", name: "DOCKER", every: 5000 },
     { id: "procs", key: "3", name: "PROCESSOS", every: 3000 },
     { id: "net", key: "4", name: "REDE", every: 4000 },
-    { id: "disks", key: "5", name: "DISCOS", every: 5000 },
+    { id: "maint", key: "5", name: "MANUTENCAO", every: 0 },
     { id: "system", key: "6", name: "SISTEMA", every: 15000 },
     { id: "security", key: "7", name: "SEGURANCA", every: 30000 },
     { id: "history", key: "8", name: "HISTORICO", every: 60000 },
@@ -450,7 +450,6 @@
       var s = d.static, m = n.memory, dk = d.docker || {};
       pushLive("cpu", n.cpu.percent); pushLive("mem", m.percent);
       pushLive("rx", n.net.rx_rate); pushLive("tx", n.net.tx_rate);
-      pushLive("rd", n.io.read_rate); pushLive("wr", n.io.write_rate);
       updateHeader(d);
       var alerts = (d.alerts || []).slice();
       if (d.reboot_required) alerts.push("Reinicio pendente (atualizacao do kernel)");
@@ -492,7 +491,8 @@
             h("div", { class: "row" }, h("span", null, x.mount), h("span", { class: "muted" }, bytes(x.free) + " livres")),
             h("div", { class: "stat" }, h("span"), hp(x.percent, { w: 80, c: 90 }), h("span", { class: "val " + level(x.percent, 80, 90) }, pct(x.percent))));
         })), h("hr", { class: "sep" }),
-          kv([["Leitura", rate(n.io.read_rate)], ["Escrita", rate(n.io.write_rate)]])),
+          kv([["Leitura", rate(n.io.read_rate)], ["Escrita", rate(n.io.write_rate)]]),
+          h("p", null, h("button", { class: "btn small", onclick: function () { show("maint"); } }, "LIBERAR ESPACO ▸"))),
         box("REDE", "",
           h("canvas", { class: "spark", id: "sp-net" }),
           legend([["download", css("--ok-2")], ["upload", css("--accent-2")]]),
@@ -652,26 +652,313 @@
     }
   };
 
-  // ---------- DISCOS
-  VIEWS.disks = {
+  // ---------- MANUTENCAO (limpeza, gargalos, atualizacoes, agendamentos, verificacao)
+  var mstate = { sel: null, pkgs: {}, reboot: true, jobTimer: null, jobId: null, jobState: null };
+
+  // caixa que se preenche sozinha (as medicoes demoram; o resto da aba nao espera)
+  function lazy(title, cls, loader, render, tools) {
+    var body = h("div", null, h("p", { class: "muted blink" }, "medindo..."));
+    var b = box(title, cls, tools || null, body);
+    function go(fresh) {
+      clear(body).appendChild(h("p", { class: "muted blink" }, "medindo..."));
+      return loader(fresh).then(function (d) { clear(body).appendChild(render(d, go)); })
+        .catch(function (e) { clear(body).appendChild(h("p", { class: "crit" }, String(e.message || e))); });
+    }
+    b.reload = go;
+    go(false);
+    return b;
+  }
+
+  function runJob(kind, params, title, text, danger) {
+    return ask(title, text, "EXECUTAR", danger).then(function (ok) {
+      if (!ok) return;
+      return post("/api/maint/run", { kind: kind, params: params || {} }).then(function (r) {
+        toast("Iniciado: " + r.title);
+        pollJob(true);
+      }).catch(function (e) { toast("Erro: " + e.message, true); });
+    });
+  }
+
+  var STEP_ICON = { ok: "✔", fail: "✖", run: "▶", wait: "·" };
+  function renderJob(d) {
+    var holder = $("mjob");
+    if (!holder) return;
+    var j = d.job;
+    clear(holder);
+    if (!j) return;
+    var running = j.state === "running";
+    var recent = running || (j.finished && Date.now() / 1000 - j.finished < 3600);
+    if (!recent) return;
+    var tag = h("span", { class: "tag " + (running ? "other blink" : j.state === "done" ? "run" : "stop") },
+      running ? "RODANDO" : j.state === "done" ? "CONCLUIDO" : "COM ERRO");
+    holder.appendChild(box("TAREFA: " + j.title.toUpperCase(), "",
+      h("div", { class: "row" }, h("span", null, tag, " ", h("span", { class: "muted" }, j.source === "agendamento" ? "agendada" : "pelo painel")),
+        h("button", { class: "btn small", onclick: function () { openJobLog(); } }, "VER LOG")),
+      h("div", { class: "jobsteps" }, (j.steps || []).map(function (s) {
+        return h("div", { class: "step " + s.state }, h("b", null, STEP_ICON[s.state] || "·"), " ", s.label,
+          s.secs ? h("span", { class: "muted" }, " " + s.secs + "s") : null, s.error ? h("div", { class: "crit" }, s.error) : null);
+      })),
+      !running && j.free_after ? h("p", { class: j.freed > 0 ? "ok" : "muted" },
+        "Espaco livre em /: " + bytes(j.free_before) + " → " + bytes(j.free_after) + (j.freed > 0 ? " (+" + bytes(j.freed) + " liberados)" : "")) : null,
+      j.error ? h("p", { class: "crit" }, j.error) : null));
+  }
+  function pollJob(started) {
+    clearTimeout(mstate.jobTimer);
+    return api("/api/maint/job").then(function (d) {
+      var j = d.job;
+      if (!current || current.id !== "maint") return;
+      renderJob(d);
+      var was = mstate.jobState;
+      mstate.jobState = j ? j.state : null;
+      if (j && (j.state === "running" || started)) mstate.jobTimer = setTimeout(pollJob, 2000);
+      if (was === "running" && j && j.state !== "running") {
+        toast(j.title + (j.state === "done" ? ": concluido" : ": terminou com erro"), j.state !== "done");
+        ["mb-clean", "mb-updates", "mb-check", "mb-diag"].forEach(function (id) { var b = $(id); if (b && b.reload) b.reload(true); });
+      }
+    }).catch(function () { if (current && current.id === "maint") mstate.jobTimer = setTimeout(pollJob, 4000); });
+  }
+  function openJobLog() {
+    var pre = h("pre", { class: "logs" }, "carregando...");
+    function load() {
+      api("/api/maint/job").then(function (d) {
+        var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
+        pre.textContent = d.log || "(sem saida ainda)";
+        if (atBottom) pre.scrollTop = pre.scrollHeight;
+        if (!d.job || d.job.state !== "running") clearInterval(modalTimer);
+      }).catch(function (e) { pre.textContent = "Erro: " + e.message; });
+    }
+    openModal("LOG DA TAREFA", null, pre);
+    load();
+    clearInterval(modalTimer);
+    modalTimer = setInterval(load, 2000);
+  }
+
+  function openDu(path) {
+    var body = h("div", { class: "stack" }, h("p", { class: "muted blink" }, "medindo " + path + " (pastas grandes levam ate 1 min)..."));
+    openModal("O QUE OCUPA ESPACO", null, body);
+    api("/api/maint/du?path=" + encodeURIComponent(path)).then(function (d) {
+      var max = d.entries.length ? d.entries[0].bytes : 1;
+      add(clear(body), [
+        h("div", { class: "row" }, h("span", { class: "mid" }, d.path), h("span", { class: "muted" }, bytes(d.total) + " no total")),
+        d.parent ? h("p", null, h("button", { class: "btn small", onclick: function () { openDu(d.parent); } }, "▲ SUBIR")) : null,
+        d.timeout ? h("p", { class: "warn" }, "A medicao passou do tempo; os numeros podem estar incompletos.") : null,
+        table([{ t: "NOME", m: "title" }, { t: "TAMANHO", num: 1 }, { t: "" }], d.entries.map(function (e) {
+          return h("tr", null,
+            td(e.dir ? h("a", { href: "#", onclick: function (ev) { ev.preventDefault(); openDu(e.path); } }, e.name + "/") : h("span", { class: "muted" }, e.name), "name", e.path),
+            td(bytes(e.bytes), "num"), td(hp(e.bytes * 100 / max, { sm: 1, w: 101, c: 101 })));
+        }), { empty: "pasta vazia" }),
+        h("p", { class: "muted" }, "Para apagar algo especifico, use o TERMINAL (ex.: sudo rm -rf CAMINHO). Pelo painel, use a limpeza, que so mexe no que e seguro.")]);
+    }).catch(function (e) { clear(body).appendChild(h("p", { class: "crit" }, e.message)); });
+  }
+  function openBigFiles() {
+    var body = h("div", null, h("p", { class: "muted blink" }, "procurando arquivos com mais de 100 MB..."));
+    openModal("ARQUIVOS GRANDES", null, body);
+    api("/api/maint/bigfiles?fresh=1").then(function (d) {
+      clear(body).appendChild(table([{ t: "ARQUIVO", m: "title" }, { t: "TAMANHO", num: 1 }], d.files.map(function (f) {
+        return h("tr", null, td(f.path, "cmd", f.path), td(bytes(f.bytes), "num"));
+      }), { empty: "Nenhum arquivo acima de 100 MB." }));
+    }).catch(function (e) { clear(body).appendChild(h("p", { class: "crit" }, e.message)); });
+  }
+
+  function renderClean(d) {
+    if (!mstate.sel) {
+      mstate.sel = {};
+      d.categories.forEach(function (c) { mstate.sel[c.id] = c.default; });
+    }
+    var total = h("span");
+    function sum() {
+      var t = 0, n = 0;
+      d.categories.forEach(function (c) { if (mstate.sel[c.id]) { t += c.bytes || 0; n++; } });
+      clear(total).appendChild(document.createTextNode(n + " item(ns), ~" + bytes(t)));
+    }
+    var rows = d.categories.map(function (c) {
+      var cb = h("input", { type: "checkbox", checked: !!mstate.sel[c.id] });
+      cb.addEventListener("change", function () { mstate.sel[c.id] = cb.checked; sum(); });
+      return h("tr", null,
+        td(h("label", { class: "chk inline" }, cb, h("span", null, h("b", null, c.label), c.danger ? h("span", { class: "tag stop" }, "CUIDADO") : null)), "card-title"),
+        td([h("div", null, c.desc), h("div", { class: "muted" }, c.detail)]),
+        td(c.bytes === null ? "?" : bytes(c.bytes), "num " + (c.bytes > 500 * 1024 * 1024 ? "warn" : "")));
+    });
+    sum();
+    function selected() { return d.categories.filter(function (c) { return mstate.sel[c.id]; }); }
+    return h("div", { class: "stack" },
+      h("div", { class: "toolbar" },
+        h("button", { class: "btn gold", onclick: function () {
+          runJob("clean", { items: "quick" }, "LIMPEZA RAPIDA?", "Limpa so o que e seguro (caches, logs antigos, temporarios, sobras do Docker). Deve liberar ~" + bytes(d.quick_bytes) + ".");
+        } }, "⚡ LIMPEZA RAPIDA (~" + bytes(d.quick_bytes) + ")"),
+        h("button", { class: "btn", onclick: function () {
+          runJob("ram", {}, "LIBERAR CACHE DA MEMORIA?", "Descarta o cache de arquivos da RAM. Nada se perde, mas o disco pode ficar mais lento por alguns minutos enquanto o cache se refaz.");
+        } }, "LIBERAR CACHE DA RAM")),
+      table([{ t: "ITEM" }, { t: "O QUE E" }, { t: "LIBERA", num: 1 }], rows, { cards: true }),
+      h("div", { class: "toolbar" },
+        h("button", { class: "btn", onclick: function () {
+          var s = selected();
+          if (!s.length) return toast("Marque pelo menos um item", true);
+          var danger = s.some(function (c) { return c.danger; });
+          runJob("clean", { items: s.map(function (c) { return c.id; }) }, "LIMPAR " + s.length + " ITEM(NS)?",
+            s.map(function (c) { return c.label; }).join(", ") + "." + (danger ? " ATENCAO: inclui itens marcados como CUIDADO, que nao tem volta." : ""), danger);
+        } }, "▶ LIMPAR SELECIONADOS"), h("span", { class: "muted" }, total)),
+      h("p", { class: "muted" }, "Medido em " + new Date(d.time * 1000).toLocaleTimeString("pt-BR") + ". Espaco livre em / agora: " + bytes(d.free) + "."));
+  }
+
+  function renderDiag(d) {
+    var psi = d.pressure || {};
+    return h("div", { class: "stack" },
+      d.items.length ? h("div", { class: "stack" }, d.items.map(function (x) {
+        return h("div", { class: "diag lv-" + x.level }, h("div", null, h("b", null, (x.level === "info" ? "● " : "▲ ") + x.title)),
+          h("div", { class: "muted" }, x.detail), x.hint ? h("div", null, "→ " + x.hint) : null);
+      })) : h("p", { class: "ok" }, "Nenhum gargalo agora. CPU, memoria e disco com folga."),
+      h("hr", { class: "sep" }),
+      h("div", { class: "grid" },
+        h("div", null, h("p", { class: "label" }, "Mais CPU agora"), table([{ t: "PROCESSO" }, { t: "CPU", num: 1 }], d.top_cpu.map(function (p) {
+          return h("tr", null, td(p.name, "name", p.cmd), td(pct(p.cpu), "num " + level(p.cpu, 50, 90)));
+        }))),
+        h("div", null, h("p", { class: "label" }, "Mais memoria"), table([{ t: "PROCESSO" }, { t: "RAM", num: 1 }], d.top_mem.map(function (p) {
+          return h("tr", null, td(p.name, "name", p.cmd), td(bytes(p.rss), "num"));
+        }))),
+        h("div", null, h("p", { class: "label" }, "Discos"), table([{ t: "DISCO" }, { t: "LE/ESCREVE", num: 1 }, { t: "OCUPADO", num: 1 }], d.io.map(function (x) {
+          return h("tr", null, td(x.name), td(rate(x.read_rate) + " / " + rate(x.write_rate), "num"), td(pct(x.busy), "num " + level(x.busy)));
+        })),
+          h("p", { class: "label" }, "Espera (ultimo minuto)"),
+          kv([["Carga", d.load.map(function (x) { return x.toFixed(2); }).join(" ") + " (" + d.cores + " nucleos)"],
+              ["iowait / steal", pct(d.iowait) + " / " + pct(d.steal)],
+              ["Fila CPU", psi.cpu_some === undefined ? "n/d" : pct(psi.cpu_some)],
+              ["Fila memoria", psi.memory_some === undefined ? "n/d" : pct(psi.memory_some)],
+              ["Fila disco", psi.io_some === undefined ? "n/d" : pct(psi.io_some)]]))));
+  }
+
+  function renderUpdates(d) {
+    if (!d.manager) return h("p", { class: "muted" }, "Gerenciador de pacotes nao suportado nesta VM.");
+    var pk = d.packages, sec = pk.filter(function (p) { return p.security; });
+    var count = h("span");
+    function selNames() { return pk.filter(function (p) { return mstate.pkgs[p.name]; }).map(function (p) { return p.name; }); }
+    function sync() { clear(count).appendChild(document.createTextNode(selNames().length + " marcado(s)")); }
+    var all = h("input", { type: "checkbox" });
+    all.addEventListener("change", function () {
+      pk.forEach(function (p) { mstate.pkgs[p.name] = all.checked; });
+      Array.prototype.forEach.call(tbl.querySelectorAll("input[data-p]"), function (c) { c.checked = all.checked; });
+      sync();
+    });
+    var rb = h("input", { type: "checkbox", checked: mstate.reboot });
+    rb.addEventListener("change", function () { mstate.reboot = rb.checked; });
+    var tbl = table([{ t: "" }, { t: "PACOTE", m: "title" }, { t: "INSTALADO", m: "hide" }, { t: "NOVA VERSAO" }], pk.map(function (p) {
+      var cb = h("input", { type: "checkbox", "data-p": p.name, checked: !!mstate.pkgs[p.name] });
+      cb.addEventListener("change", function () { mstate.pkgs[p.name] = cb.checked; sync(); });
+      return h("tr", null, td(cb), td([p.name, p.security ? h("span", { class: "tag stop" }, "SEGURANCA") : null], "name"), td(p.old, "muted"), td(p.new));
+    }), { empty: "Nenhum pacote para atualizar." });
+    sync();
+    function upgrade(mode, label, extra) {
+      var params = { mode: mode, reboot: mstate.reboot };
+      if (mode === "selected") {
+        params.packages = selNames();
+        if (!params.packages.length) return toast("Marque os pacotes que quer atualizar", true);
+      }
+      runJob("upgrade", params, label, extra + (mstate.reboot ? " Se a atualizacao pedir, a VM reinicia sozinha 1 minuto depois." : " A VM nao sera reiniciada."));
+    }
+    return h("div", { class: "stack" },
+      h("div", { class: "row" },
+        h("div", { class: "big " + (pk.length ? "warn" : "ok") }, pk.length ? pk.length + " PACOTES" : "EM DIA!"),
+        h("span", { class: "muted" }, d.checked ? "lista de " + when(d.checked) : "")),
+      sec.length ? h("p", { class: "crit" }, sec.length + " atualizacao(oes) de seguranca") : null,
+      d.reboot_required ? h("p", { class: "warn" }, "⚠ A VM precisa reiniciar para concluir atualizacoes. ",
+        h("button", { class: "btn small danger", onclick: function () {
+          runJob("reboot", {}, "REINICIAR A VM?", "A VM reinicia em 1 minuto. O painel e os containers ficam fora do ar por 1 a 3 minutos e voltam sozinhos.", true);
+        } }, "REINICIAR AGORA")) : null,
+      h("p", { class: "muted" }, "Atualizacoes de seguranca automaticas: " + (d.auto ? "ligadas" : "desligadas (agende abaixo)")),
+      h("div", { class: "toolbar" },
+        h("button", { class: "btn", onclick: function () { runJob("refresh", {}, "BUSCAR ATUALIZACOES?", "Baixa a lista mais recente de pacotes (" + (d.manager === "apt" ? "apt update" : d.manager + " makecache") + ")."); } }, "↻ BUSCAR NOVAS"),
+        pk.length ? h("button", { class: "btn gold", onclick: function () { upgrade("all", "ATUALIZAR TUDO?", pk.length + " pacote(s) serao atualizados."); } }, "▶ ATUALIZAR TUDO") : null,
+        sec.length ? h("button", { class: "btn", onclick: function () { upgrade("security", "SO SEGURANCA?", sec.length + " pacote(s) de seguranca serao atualizados."); } }, "SO SEGURANCA (" + sec.length + ")") : null,
+        pk.length ? h("button", { class: "btn", onclick: function () { upgrade("selected", "ATUALIZAR SELECIONADOS?", selNames().join(", ") + "."); } }, "ATUALIZAR MARCADOS") : null),
+      h("label", { class: "chk" }, rb, "Reiniciar a VM sozinha se a atualizacao pedir"),
+      pk.length ? h("div", { class: "row" }, h("label", { class: "chk" }, all, "marcar todos"), h("span", { class: "muted" }, count)) : null,
+      tbl);
+  }
+
+  function renderSchedules(d, reload) {
+    var task = h("select", null, Object.keys(d.tasks).map(function (k) { return h("option", { value: k }, d.tasks[k]); }));
+    var freq = h("select", null, [["daily", "Todo dia"], ["weekly", "Toda semana"], ["once", "Uma vez"]].map(function (o) { return h("option", { value: o[0] }, o[1]); }));
+    var day = h("select", null, d.days.map(function (n, i) { return h("option", { value: i, selected: i === 6 }, n); }));
+    var tomorrow = new Date(Date.now() + 86400000);
+    var date = h("input", { type: "date", value: tomorrow.getFullYear() + "-" + pad(tomorrow.getMonth() + 1) + "-" + pad(tomorrow.getDate()) });
+    var at = h("input", { type: "time", value: "04:00" });
+    var rb = h("input", { type: "checkbox", checked: true });
+    var rbl = h("label", { class: "chk" }, rb, "reiniciar se precisar");
+    function vis() {
+      day.classList.toggle("hidden", freq.value !== "weekly");
+      date.classList.toggle("hidden", freq.value !== "once");
+      rbl.classList.toggle("hidden", task.value.indexOf("upgrade") !== 0);
+    }
+    freq.addEventListener("change", vis); task.addEventListener("change", vis); vis();
+    function desc(s) {
+      return s.when === "daily" ? "todo dia " + s.at : s.when === "weekly" ? (s.dow >= 5 ? "todo " : "toda ") + d.days[s.dow] + " " + s.at : "em " + s.date.split("-").reverse().join("/") + " " + s.at;
+    }
+    var form = h("form", { class: "toolbar" }, task, freq, day, date, at, rbl, h("button", { class: "btn gold", type: "submit" }, "+ AGENDAR"));
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      post("/api/maint/schedule", { task: task.value, when: freq.value, dow: Number(day.value), date: date.value, at: at.value, reboot: rb.checked })
+        .then(function () { toast("Agendado!"); reload(); }).catch(function (er) { toast("Erro: " + er.message, true); });
+    });
+    return h("div", { class: "stack" },
+      h("p", { class: "muted" }, "Hora da VM agora: " + d.now + " (" + d.tz + "). Os horarios abaixo seguem esse relogio."),
+      table([{ t: "TAREFA", m: "title" }, { t: "QUANDO" }, { t: "PROXIMA" }, { t: "ULTIMA" }, { t: "" }], d.items.map(function (s) {
+        return h("tr", null, td([s.task_label, s.reboot ? h("span", { class: "muted" }, " + reinicio") : null], "name"), td(desc(s)),
+          td(s.next || h("span", { class: "muted" }, s.enabled ? "-" : "ja rodou")),
+          td(s.last_run ? when(s.last_run) + (s.last_result && s.last_result !== "iniciada" ? " (" + s.last_result + ")" : "") : "-", "muted"),
+          td(h("button", { class: "btn small danger", onclick: function () {
+            post("/api/maint/schedule/delete", { id: s.id }).then(function () { toast("Agendamento removido"); reload(); })
+              .catch(function (er) { toast("Erro: " + er.message, true); });
+          } }, "REMOVER"), "actions"));
+      }), { empty: "Nada agendado. Sugestao: limpeza rapida toda semana e atualizacao de seguranca todo dia de madrugada.", cards: true }),
+      form);
+  }
+
+  function renderCheck(d) {
+    var bad = d.items.filter(function (x) { return x.ok === false; }), fixable = d.items.filter(function (x) { return x.fix && x.ok !== true; });
+    return h("div", { class: "stack" },
+      h("p", { class: bad.length ? "warn" : "ok" }, bad.length ? bad.length + " problema(s) encontrado(s)." : "Tudo instalado e com acesso ao que precisa."),
+      d.agent_error ? h("p", { class: "crit" }, d.agent_error) : null,
+      table([{ t: "" }, { t: "ITEM", m: "title" }, { t: "DETALHE" }], d.items.map(function (x) {
+        var t = x.ok === true ? ["run", "OK"] : x.ok === false ? ["stop", "FALHA"] : ["other", "AVISO"];
+        return h("tr", null, td(h("span", { class: "tag " + t[0] }, t[1])), td(x.label, "name"), td(x.detail, "muted"));
+      }), { cards: true }),
+      fixable.length ? h("p", null, h("button", { class: "btn gold", onclick: function () {
+        runJob("fix", {}, "CORRIGIR A INSTALACAO?", "Reinstala os servicos do painel, grupos e permissoes (igual a sudo vmpanel restart). O painel reinicia por alguns segundos.");
+      } }, "▶ CORRIGIR AUTOMATICAMENTE")) : null);
+  }
+
+  VIEWS.maint = {
     load: function () { return api("/api/overview"); },
     render: function (d) {
-      var n = d.now;
-      pushLive("rd", n.io.read_rate); pushLive("wr", n.io.write_rate);
-      return h("div", { class: "grid wide" },
-        box("PARTICOES", "span2", h("div", { class: "stack" }, n.disks.map(function (x) {
-          return h("div", null, h("div", { class: "row" }, h("span", { class: "mid" }, x.mount), h("span", { class: "muted" }, x.device + " · " + x.fs)),
-            stat("USO", x.percent, pct(x.percent), { w: 80, c: 90 }),
-            h("div", { class: "row muted" }, h("span", null, bytes(x.used) + " usados · " + bytes(x.free) + " livres · " + bytes(x.total) + " total"),
-              h("span", { class: level(x.inodes_percent) }, "inodes " + pct(x.inodes_percent))));
-        }))),
-        box("LEITURA E ESCRITA", "span2", h("canvas", { class: "chart", id: "ch-io" }),
-          h("p", { class: "muted" }, "verde = leitura · azul = escrita (ultimos minutos)"),
-          table([{ t: "DISCO" }, { t: "LEITURA", num: 1 }, { t: "ESCRITA", num: 1 }, { t: "OCUPADO", num: 1 }], n.io.devices.map(function (x) {
-            return h("tr", null, td(x.name), td(rate(x.read_rate), "num"), td(rate(x.write_rate), "num"), td(pct(x.busy), "num " + level(x.busy)));
-          }))));
-    },
-    after: function () { drawChart($("ch-io"), [{ data: live.rd, fill: true }, { data: live.wr }], { axis: true, fmt: rate }); }
+      var n = d.now || {};
+      if (!n.disks) return box(null, "", h("p", { class: "muted" }, "Coletando a primeira leitura..."));
+      updateHeader(d);
+      var disks = box("DISCOS", "", h("div", { class: "stack" }, n.disks.map(function (x) {
+        return h("div", null, h("div", { class: "row" }, h("span", { class: "mid" }, x.mount), h("span", { class: "muted" }, x.device + " · " + x.fs)),
+          stat("USO", x.percent, pct(x.percent), { w: 80, c: 90 }),
+          h("div", { class: "row muted" }, h("span", null, bytes(x.free) + " livres de " + bytes(x.total)),
+            h("span", { class: level(x.inodes_percent) }, "inodes " + pct(x.inodes_percent))));
+      })), h("hr", { class: "sep" }), h("div", { class: "toolbar" },
+        h("button", { class: "btn", onclick: function () { openDu("/"); } }, "O QUE OCUPA ESPACO"),
+        h("button", { class: "btn", onclick: openBigFiles }, "ARQUIVOS GRANDES")));
+      var clean = lazy("LIMPEZA", "", function (f) { return api("/api/maint/scan" + (f ? "?fresh=1" : "")); }, renderClean);
+      clean.id = "mb-clean";
+      var diag = lazy("O QUE ESTA PESANDO AGORA", "full", function () { return api("/api/maint/diagnose"); }, renderDiag,
+        h("div", { class: "toolbar" }, h("button", { class: "btn small", onclick: function () { diag.reload(); } }, "↻ ANALISAR DE NOVO")));
+      diag.id = "mb-diag";
+      var upd = lazy("PACOTES DO SISTEMA", "", function (f) { return api("/api/maint/updates" + (f ? "?fresh=1" : "")); }, renderUpdates);
+      upd.id = "mb-updates";
+      var sched = lazy("AGENDAMENTOS", "", function () { return api("/api/maint/schedules"); }, renderSchedules);
+      var chk = lazy("INSTALACAO E ACESSOS", "full", function () { return api("/api/maint/check"); }, renderCheck);
+      chk.id = "mb-check";
+      setTimeout(function () { pollJob(false); }, 50);
+      return h("div", null,
+        h("div", { id: "mjob" }),
+        section("ESPACO", "limpar e liberar disco", h("div", { class: "grid m2" }, disks, clean)),
+        section("GARGALOS", "o que deixa a VM lenta", h("div", { class: "grid" }, diag)),
+        section("ATUALIZAR A VM", "escolher o que atualizar", h("div", { class: "grid m2r" }, upd, sched)),
+        section("VERIFICACAO", "instalacao e permissoes do painel", h("div", { class: "grid" }, chk)));
+    }
   };
 
   // ---------- SISTEMA
@@ -689,8 +976,7 @@
             u.security ? h("p", { class: "crit" }, u.security + " atualizacoes de seguranca") : null,
             d.reboot_required ? h("p", { class: "warn" }, "⚠ A VM precisa reiniciar para concluir atualizacoes") : null,
             u.count ? h("p", { class: "muted cmd" }, (u.packages || []).join(", ")) : null,
-            u.count ? h("p", null, "Para instalar, abra o ", h("a", { href: "#term", onclick: function (e) { e.preventDefault(); show("term"); } }, "TERMINAL"),
-              " e rode: ", h("code", null, "sudo " + (u.manager === "apt" ? "apt update && sudo apt upgrade" : "dnf upgrade"))) : null)
+            h("p", null, h("button", { class: "btn small", onclick: function () { show("maint"); } }, "ATUALIZAR / AGENDAR ▸"))) 
             : h("p", { class: "muted" }, "Gerenciador de pacotes nao detectado.")),
         box("SERVICOS IMPORTANTES", "", table([{ t: "SERVICO" }, { t: "ESTADO" }, { t: "DESDE" }], d.services.map(function (x) {
           var on = x.active === "active";
@@ -709,7 +995,8 @@
       var d = r[0], me = r[1], ssh = d.ssh;
       var kinds = { login_ok: "LOGIN OK", login_fail: "LOGIN FALHOU", ip_locked: "IP BLOQUEADO", alert: "ALERTA", settings: "CONFIG",
         start: "PAINEL INICIOU", sessions_revoked: "SESSOES ENCERRADAS", terminal: "TERMINAL ABERTO", term_unlock: "TERMINAL LIBERADO",
-        term_unlock_fail: "SENHA ERRADA (TERMINAL)", panel_update: "ATUALIZACAO DO PAINEL" };
+        term_unlock_fail: "SENHA ERRADA (TERMINAL)", panel_update: "ATUALIZACAO DO PAINEL", maint_run: "MANUTENCAO",
+        maint_schedule: "AGENDOU MANUTENCAO", maint_schedule_del: "REMOVEU AGENDAMENTO" };
       return h("div", { class: "grid wide" },
         box("SEU ACESSO", "", kv([["Usuario", me.user], ["2FA", me.totp ? h("span", { class: "ok" }, "ATIVO") : h("span", { class: "warn" }, "DESATIVADO (sudo vmpanel 2fa-on)")],
             ["Seu IP", me.ip], ["Sessoes abertas", d.sessions.length]]),
@@ -996,8 +1283,8 @@
   }
 
   // ------------------------------------------------------------------ celular: menu inferior, "MAIS" e puxar para atualizar
-  var BNAV = ["dash", "docker", "procs", "term"];
-  var SHORT = { dash: "STATUS", docker: "DOCKER", procs: "PROC", term: "TERM", more: "MAIS" };
+  var BNAV = ["dash", "docker", "maint", "term"];
+  var SHORT = { dash: "STATUS", docker: "DOCKER", maint: "MANUT", term: "TERM", more: "MAIS" };
   function buildBottomNav() {
     add($("bnav"), BNAV.concat(["more"]).map(function (id) {
       return h("button", { "data-id": id, onclick: function () { buzz(); if (id === "more") openMore(); else { if (modalOpen) closeModal(); show(id); } } },

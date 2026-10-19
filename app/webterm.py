@@ -31,13 +31,15 @@ def _read_line(s):
     return json.loads(line.decode() or "{}")
 
 
-def agent_call(action, timeout=90):
+def agent_call(action, timeout=90, **params):
+    req = dict(params)
+    req["action"] = action
     try:
-        s = agent_connect({"action": action}, timeout)
+        s = agent_connect(req, timeout)
     except OSError:
         return {"ok": False, "error": "agente do painel indisponivel (rode: curl .../update.sh | sudo bash)"}
     try:
-        return _read_line(s)
+        return json.loads(s.makefile("rb").readline().decode() or "{}")
     finally:
         s.close()
 

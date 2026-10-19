@@ -1,6 +1,6 @@
 # VM//PANEL
 
-Painel de monitoramento da sua VM com visual retrô minimalista (fundo escuro, uma cor de destaque, títulos em fonte pixel), organizado por tópicos: resumo, recursos, atividade e máquina. Mostra CPU, RAM, discos, rede, processos, Docker e Swarm, segurança e histórico, tem **terminal da VM no navegador** e **botão para se atualizar sozinho**, tudo protegido por um login único.
+Painel de monitoramento da sua VM com visual retrô minimalista (fundo escuro, uma cor de destaque, títulos em fonte pixel), organizado por tópicos: resumo, recursos, atividade e máquina. Mostra CPU, RAM, discos, rede, processos, Docker e Swarm, segurança e histórico, tem **área de manutenção** (limpar espaço, achar gargalos, atualizar e agendar com um clique), **terminal da VM no navegador** e **botão para se atualizar sozinho**, tudo protegido por um login único.
 
 ```
  __   ____  __    __  __  ___  _   _  _ ___ _
@@ -80,12 +80,23 @@ curl -fsSL https://raw.githubusercontent.com/dhqdev/gerenciamento/HEAD/install.s
 | `2` DOCKER | **Docker Swarm:** stacks e serviços com réplicas, domínio de cada um (lido do Traefik), logs e botão de reiniciar o serviço. Todos os containers com CPU, memória, rede e portas; **iniciar, parar e reiniciar**; logs ao vivo com filtro; detalhes (volumes, redes, health, restarts); imagens e uso de disco do Docker |
 | `3` PROCESSOS | Lista estilo `top`, ordenável por CPU, memória ou PID, com busca |
 | `4` REDE | Tráfego por interface, IPs, portas abertas (marcando as expostas para a internet), conexões TCP e IPs mais conectados |
-| `5` DISCOS | Todas as partições com uso e inodes, gráfico de leitura/escrita e ocupação por disco |
-| `6` SISTEMA | Hardware e SO, serviços importantes (docker, caddy, ssh...), unidades systemd com falha, atualizações pendentes (incluindo de segurança) e aviso de reboot necessário |
+| `5` MANUTENÇÃO | **Limpeza com um clique**, **gargalos**, **atualizações do sistema** escolhendo os pacotes, **agendamentos** e **verificação da instalação** (detalhes abaixo) |
+| `6` SISTEMA | Hardware e SO, serviços importantes (docker, caddy, ssh...), unidades systemd com falha e resumo das atualizações pendentes |
 | `7` SEGURANÇA | Tentativas de login SSH com falha nas últimas 24h, IPs atacantes, usuários tentados, quem está logado na VM, sessões abertas no painel e log de auditoria |
 | `8` HISTÓRICO | Gráficos de 1h, 6h, 24h, 7 e 30 dias (CPU, memória, swap, rede, disco, load) |
 | `9` TERMINAL | Terminal completo da VM no navegador (cores, `htop`, `nano`, redimensiona sozinho). Pede a senha de novo e fica liberado por 30 min |
 | `0` CONFIG | Limites de alerta, notificações por Discord e Telegram, tema e efeito de TV antiga |
+
+### Manutenção (aba 5)
+
+- **Espaço:** uso e inodes de cada partição, "o que ocupa espaço" (navega pelas pastas com o tamanho de cada uma) e "arquivos grandes" (acima de 100 MB).
+- **Limpeza:** mede quanto cada item libera e limpa com um clique. A **LIMPEZA RÁPIDA** só mexe no que é seguro: cache de pacotes (apt/dnf), pacotes órfãos e kernels antigos, journal acima de 200 MB, logs rotacionados (.gz/.1/.old), temporários com mais de 7 dias, relatórios de travamento, caches de pip/npm/yarn/go, versões antigas do snap, imagens soltas e cache de build do Docker. Itens opcionais: logs dos containers, todas as imagens sem uso, containers parados e volumes anônimos sem uso (esses dois marcados como CUIDADO). Também tem **LIBERAR CACHE DA RAM**.
+- **Gargalos:** aponta o que está pesando agora, com uma dica do que fazer: CPU, steal da nuvem, carga, memória e swap, espera de disco (iowait e PSI), disco ou inodes cheios, processos mortos por falta de memória (OOM) nas últimas 24h, containers reiniciando sem parar e serviços com falha. Mostra também quem mais usa CPU, memória e disco.
+- **Atualizar a VM:** lista os pacotes com a versão instalada e a nova, marcando os de segurança. Dá para buscar novas, **atualizar tudo**, **só segurança** ou **só os marcados**, e reiniciar sozinha se a atualização pedir.
+- **Agendamentos:** limpeza rápida, atualizar tudo, só segurança, buscar atualizações ou reiniciar a VM, uma vez, todo dia ou toda semana no horário da VM. Se a VM estiver desligada na hora, a tarefa roda quando ela voltar (até 6h de atraso).
+- **Verificação:** confere se o painel está instalado direito e tem acesso a tudo (serviços, Docker, journal, credenciais, HTTPS/Traefik, relógio para o 2FA, código intacto, espaço livre) e corrige com **CORRIGIR AUTOMATICAMENTE**.
+
+As tarefas rodam numa unidade systemd separada (`vmpanel-maint-*`), então continuam mesmo se o apt reiniciar o painel. O andamento e o log aparecem ao vivo no topo da aba, e tudo fica no registro de auditoria.
 
 **Vigia do Oracle Always Free:** a Oracle pode recuperar instâncias gratuitas que ficam ociosas (CPU no percentil 95 abaixo de 20% durante 7 dias). O painel calcula isso com o histórico e avisa quando a VM está em risco.
 
@@ -114,7 +125,7 @@ O app abre em tela cheia com ícone próprio. Os dados nunca ficam guardados no 
 - O servidor só escuta em `127.0.0.1`; quem fala com a internet é o Caddy, com HTTPS.
 - O serviço roda com o usuário sem privilégios `vmpanel` e com o sandbox do systemd (`ProtectSystem=strict`, `NoNewPrivileges` e outros).
 - Todo login, falha, bloqueio, ação no Docker, abertura de terminal e atualização fica registrado na auditoria.
-- **Terminal:** exige a senha de novo (e conta como tentativa errada no bloqueio por IP), vale por 30 min, só aceita WebSocket da mesma origem e pode ser desligado com `sudo vmpanel terminal off`. O agente root só executa ações fixas (abrir o shell, checar versão e atualizar); nada que venha do navegador vira comando root.
+- **Terminal:** exige a senha de novo (e conta como tentativa errada no bloqueio por IP), vale por 30 min, só aceita WebSocket da mesma origem e pode ser desligado com `sudo vmpanel terminal off`. O agente root só executa ações fixas (abrir o shell, checar versão, atualizar e as tarefas de manutenção de `app/maint.py`); do navegador só chegam ids de uma lista fechada, nomes de pacote validados e horários, nunca um comando.
 
 > Atenção: estar no grupo `docker` dá controle total sobre os containers. É por isso que o painel tem login forte, 2FA e bloqueio de IP. Ative o 2FA.
 
@@ -153,7 +164,8 @@ app/docker_api.py       cliente da API do Docker via unix socket
 app/auth.py             senha scrypt, TOTP, sessões e rate limit
 app/store.py            histórico SQLite, auditoria, configurações e alertas
 app/manage.py           gerenciamento das credenciais
-app/agent.py            agente root: terminal (PTY), versão e atualização
+app/agent.py            agente root: terminal (PTY), versão, atualização e manutenção
+app/maint.py            limpeza, verificação, atualizações do sistema e agendamentos (root)
 app/webterm.py          WebSocket do terminal (biblioteca padrão)
 app/traefik_detect.py   detecta um Traefik já existente na VM
 app/static/             interface 16 bits (HTML, CSS e JS puros; xterm.js em vendor/)

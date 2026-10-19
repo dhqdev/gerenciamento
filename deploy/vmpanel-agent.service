@@ -1,5 +1,5 @@
 [Unit]
-Description=VM//PANEL agent (terminal web e atualizacao do painel)
+Description=VM//PANEL agent (terminal web, atualizacao e manutencao da VM)
 After=network-online.target
 Wants=network-online.target
 

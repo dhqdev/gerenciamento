@@ -5,6 +5,8 @@ Escuta em um unix socket acessivel apenas ao grupo `vmpanel` e aceita so:
   - term     abre um terminal (PTY) como o usuario definido em VMPANEL_TERM_USER
   - version  compara a versao instalada com a do GitHub
   - update   dispara `vmpanel update` em uma unidade systemd separada
+  - maint-*  manutencao da VM (limpeza, verificacao, atualizacoes, agendamentos),
+             com a lista fechada de comandos de maint.py
 
 Nada que vem do cliente vira comando: o usuario do terminal e o comando de update
 sao definidos aqui / em /etc/vmpanel/env (que so o root pode alterar).
@@ -23,6 +25,9 @@ import subprocess
 import sys
 import termios
 import threading
+import time
+
+import maint
 
 SOCK_DIR = "/run/vmpanel"
 SOCK = os.path.join(SOCK_DIR, "agent.sock")
@@ -92,6 +97,59 @@ def act_update_log(conn):
     except OSError:
         txt = ""
     send_json(conn, {"ok": True, "log": txt})
+
+
+# ---------------------------------------------------------------- manutencao
+
+_mcache = {}
+
+
+def _maint_cached(key, ttl, fn, fresh=False):
+    """Resultados demorados (medir espaco, listar pacotes) ficam guardados um pouco,
+    e caem sozinhos quando uma tarefa de manutencao termina."""
+    job = (maint.job_status().get("job") or {})
+    hit = _mcache.get(key)
+    if hit and not fresh and time.time() - hit[0] < ttl and (job.get("finished") or 0) < hit[0]:
+        return hit[1]
+    val = fn()
+    _mcache[key] = (time.time(), val)
+    return val
+
+
+def act_maint(conn, action, req):
+    fresh = bool(req.get("fresh"))
+    if action == "maint-scan":
+        r = _maint_cached("scan", 300, maint.scan, fresh)
+    elif action == "maint-updates":
+        r = _maint_cached("updates", 600, maint.updates_list, fresh)
+    elif action == "maint-check":
+        r = maint.check()
+    elif action == "maint-job":
+        r = maint.job_status()
+    elif action == "maint-run":
+        r = maint.start_job(str(req.get("kind", "")), req.get("params") or {})
+    elif action == "maint-du":
+        r = maint.du_dir(str(req.get("path") or "/"))
+    elif action == "maint-bigfiles":
+        r = _maint_cached("big", 300, maint.big_files, fresh)
+    elif action == "maint-sched-list":
+        r = maint.sched_list()
+    elif action == "maint-sched-add":
+        r = maint.sched_add(req.get("sched") or {})
+    elif action == "maint-sched-del":
+        r = maint.sched_delete(str(req.get("id", "")))
+    else:
+        r = {"ok": False, "error": "acao desconhecida"}
+    send_json(conn, r)
+
+
+def scheduler():
+    while True:
+        try:
+            maint.sched_tick()
+        except Exception as e:
+            print("agendador:", e, flush=True)
+        time.sleep(30)
 
 
 def act_term(conn, req):
@@ -175,7 +233,7 @@ def handle(conn):
             if not c:
                 return
             line += c
-            if len(line) > 4096:
+            if len(line) > 65536:
                 return
         req = json.loads(line.decode())
         action = req.get("action")
@@ -187,6 +245,8 @@ def handle(conn):
             act_update(conn)
         elif action == "update-log":
             act_update_log(conn)
+        elif str(action).startswith("maint-"):
+            act_maint(conn, action, req)
         else:
             send_json(conn, {"ok": False, "error": "acao desconhecida"})
     except Exception as e:
@@ -216,6 +276,7 @@ def main():
     srv.listen(16)
     print("vmpanel-agent ouvindo em %s" % SOCK, flush=True)
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    threading.Thread(target=scheduler, daemon=True).start()
     while True:
         conn, _ = srv.accept()
         threading.Thread(target=handle, args=(conn,), daemon=True).start()

@@ -204,6 +204,26 @@ pre.logs {
   padding: 12px; margin: 0; max-height: 64vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
 
+/* manutencao */
+label.chk.inline { margin: 0; align-items: flex-start; }
+label.chk.inline input { margin-top: 2px; flex: 0 0 auto; }
+label.chk.inline .tag { margin-left: 8px; }
+.jobsteps { margin: 12px 0; display: grid; gap: 6px; }
+.jobsteps .step b { display: inline-block; width: 1.2em; }
+.jobsteps .step.ok b { color: var(--ok); }
+.jobsteps .step.fail b { color: var(--crit); }
+.jobsteps .step.run { color: var(--accent); }
+.jobsteps .step.wait { color: var(--muted); }
+.diag { border-left: 3px solid var(--dim); padding: 4px 0 4px 12px; }
+.diag.lv-crit { border-left-color: var(--crit); }
+.diag.lv-warn { border-left-color: var(--warn); }
+.diag.lv-crit > div:first-child { color: var(--crit); }
+.diag.lv-warn > div:first-child { color: var(--warn); }
+.grid.m2 { grid-template-columns: minmax(300px, 1fr) 2fr; }
+.grid.m2r { grid-template-columns: 3fr 2fr; }
+@media (max-width: 1100px) { .grid.m2, .grid.m2r { grid-template-columns: 1fr; } }
+#mjob .box { border-color: var(--accent); margin-top: 22px; }
+
 /* stacks do Swarm */
 .stacks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 18px; }
 .stack-card { background: var(--panel); border: 1px solid var(--line); padding: 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
