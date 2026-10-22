@@ -286,6 +286,8 @@ svg.ico { width: 1em; height: 1em; fill: currentColor; display: inline-block; ve
 }
 .key.on { background: var(--accent); color: var(--ink); border-color: var(--accent); }
 .key:active { transform: translateY(1px); }
+.key.paste { color: var(--accent); border-color: var(--accent); }
+.paste-box { width: 100%; min-height: 120px; resize: vertical; font-family: var(--mono, monospace); font-size: 16px; }
 @media (pointer: coarse), (max-width: 760px) {
   .keybar { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
   .keybar::-webkit-scrollbar { display: none; }
