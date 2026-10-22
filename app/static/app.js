@@ -1064,9 +1064,55 @@
     termCtrl = ctrl;
     var keys = [["ESC", "\x1b"], ["TAB", "\t"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"],
                 ["|", "|"], ["/", "/"], ["-", "-"], ["~", "~"], ["^C", "\x03"], ["^D", "\x04"]];
-    return h("div", { class: "keybar" }, ctrl, keys.map(function (k) {
+    var paste = h("button", { class: "key paste", onclick: function () { buzz(); termPasteClipboard(); } }, "COLAR");
+    return h("div", { class: "keybar" }, ctrl, paste, keys.map(function (k) {
       return h("button", { class: "key", onclick: function () { buzz(); termSend(k[1]); if (term) term.focus(); } }, k[0]);
     }));
+  }
+  // colar: o iPhone nao mostra "Colar" ao segurar o dedo no terminal, entao damos dois caminhos
+  function termPaste(text) {
+    if (!text) return;
+    if (term) { term.paste(text); term.focus(); } else termSend(text);
+  }
+  function termPasteClipboard() {
+    // 1) le a area de transferencia direto (o iOS mostra um balao "Colar" para confirmar)
+    if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
+      navigator.clipboard.readText().then(function (t) { if (t) termPaste(t); else termPasteBox(); })
+        .catch(function () { termPasteBox(); });
+    } else termPasteBox();
+  }
+  function termPasteBox() {
+    // 2) caixa de texto normal: segure o dedo nela e escolha "Colar"
+    var ta = h("textarea", { class: "paste-box", rows: 5, placeholder: "Segure o dedo aqui e escolha Colar",
+                             autocapitalize: "off", autocorrect: "off", autocomplete: "off", spellcheck: "false" });
+    function send(enter) {
+      var t = ta.value;
+      if (!t) { ta.focus(); return; }
+      closeModal();
+      termPaste(enter ? t.replace(/[\r\n]+$/, "") + "\r" : t);
+    }
+    openModal("COLAR NO TERMINAL", null, h("div", { class: "stack" },
+      h("p", { class: "muted" }, "Cole o texto abaixo e toque em ENVIAR. Ele vai para o terminal como se voce tivesse digitado."),
+      ta,
+      h("div", { class: "toolbar" },
+        h("button", { class: "btn gold", onclick: function () { send(false); } }, "ENVIAR"),
+        h("button", { class: "btn", onclick: function () { send(true); } }, "ENVIAR + ENTER"))));
+    setTimeout(function () { ta.focus(); }, 50);
+  }
+  // segurar o dedo no terminal (sem arrastar) abre as opcoes de colar
+  function longPressPaste(el) {
+    var t = null, x0 = 0, y0 = 0;
+    function stop() { clearTimeout(t); t = null; }
+    el.addEventListener("touchstart", function (e) {
+      if (e.touches.length !== 1) return stop();
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+      stop(); t = setTimeout(function () { t = null; buzz(); termPasteClipboard(); }, 600);
+    }, { passive: true });
+    el.addEventListener("touchmove", function (e) {
+      if (t && (Math.abs(e.touches[0].clientX - x0) > 10 || Math.abs(e.touches[0].clientY - y0) > 10)) stop();
+    }, { passive: true });
+    el.addEventListener("touchend", stop);
+    el.addEventListener("touchcancel", stop);
   }
   function loadXterm() {
     if (window.Terminal && window.FitAddon) return Promise.resolve();
@@ -1160,10 +1206,11 @@
       }
       var status = h("span", { class: "tag other" }, "CONECTANDO");
       var holder = h("div", { class: "term-wrap" });
+      longPressPaste(holder);
       var wrap = h("div", { class: "stack" },
         h("div", { class: "toolbar" }, status,
           h("button", { class: "btn", onclick: function () { startTerminal(holder, status); } }, "↻ RECONECTAR"),
-          h("span", { class: "muted hide-m" }, "Dica: copie com Ctrl+Shift+C e cole com Ctrl+Shift+V. Tudo que acontece aqui fica no registro do painel.")),
+          h("span", { class: "muted hide-m" }, "Dica: copie com Ctrl+Shift+C e cole com Ctrl+Shift+V (no celular, use o botao COLAR). Tudo que acontece aqui fica no registro do painel.")),
         holder, keybar());
       setTimeout(function () { startTerminal(holder, status); }, 30);
       return wrap;
